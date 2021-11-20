@@ -1,5 +1,5 @@
 stable:cargo:
-  image: rustdocker/rust:stable
+  image: rustdocker/rust:nightly
   stage: test
   script:
     - cargo test
