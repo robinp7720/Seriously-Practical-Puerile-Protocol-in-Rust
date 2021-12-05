@@ -3,40 +3,51 @@ mod connection_manager;
 mod constants;
 pub mod packet;
 
+use connection::Connection;
+
 use crate::connection_manager::ConnectionManager;
 use std::io::Error;
-use std::net::SocketAddr;
-use std::net::UdpSocket;
+use std::net::{SocketAddr, ToSocketAddrs, UdpSocket};
 
-struct SPPPConnection {
-    address: SocketAddr,
-    connection_id: u64,
+pub struct SPPPConnection {
+    connection: Connection,
 }
 
-struct SPPPSocket {
+pub struct SPPPSocket {
     connection_manager: ConnectionManager,
-    addr: SocketAddr,
 }
 
 impl SPPPSocket {
-    pub fn new(addr: SocketAddr) -> Self {
-        let socket = UdpSocket::bind("0.0.0.0:0").unwrap();
+    pub fn new(port: Option<u16>) -> Self {
+        let socket = match port {
+            None => UdpSocket::bind("0.0.0.0:0").unwrap(),
+            Some(port) => UdpSocket::bind(format!("0.0.0.0:{}", port)).unwrap(),
+        };
+
+        println!("{}", socket.local_addr().unwrap().port());
 
         let connection_manager = connection_manager::ConnectionManager::new(socket);
 
-        SPPPSocket {
-            connection_manager,
-            addr,
-        }
+        connection_manager.start();
+
+        SPPPSocket { connection_manager }
     }
 
-    pub fn accept(&self) -> Result<SPPPConnection, Error> {
-        let connection_id = self.connection_manager.accept();
+    /*pub fn listen(&self, queue_length: usize, whitelist: Option<Vec<IpAddr>>) -> Result<(), Error> {
+        //self.connection_manager.listen(queue_length, whitelist)
+        todo!()
+    }*/
 
-        Ok(SPPPConnection {
-            address: self.addr,
-            connection_id,
-        })
+    pub fn accept(&self) -> Result<SPPPConnection, Error> {
+        let connection = self.connection_manager.accept();
+
+        Ok(SPPPConnection { connection })
+    }
+
+    pub fn connect<A: ToSocketAddrs>(&self, addr: A) -> Result<(), Error> {
+        let connection = self.connection_manager.connect(addr);
+
+        Ok(())
     }
 }
 

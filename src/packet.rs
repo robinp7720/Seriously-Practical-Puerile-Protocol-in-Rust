@@ -1,14 +1,23 @@
-struct PrimaryHeader {
+#[derive(Debug)]
+pub struct PrimaryHeader {
     connection_id: u32,
+    seq_number: u32,
     ack_number: u32,
     arwnd: u16,
     flags: PacketFlags,
 }
 
 impl PrimaryHeader {
-    fn new(connection_id: u32, ack_number: u32, arwnd: u16, flags: PacketFlags) -> PrimaryHeader {
+    pub(crate) fn new(
+        connection_id: u32,
+        seq_number: u32,
+        ack_number: u32,
+        arwnd: u16,
+        flags: PacketFlags,
+    ) -> PrimaryHeader {
         PrimaryHeader {
             connection_id,
+            seq_number,
             ack_number,
             arwnd,
             flags,
@@ -18,9 +27,11 @@ impl PrimaryHeader {
     fn to_bytes(&self) -> Vec<u8> {
         let mut bytes = Vec::new();
         bytes.extend_from_slice(&self.connection_id.to_be_bytes());
+        bytes.extend_from_slice(&self.seq_number.to_be_bytes());
         bytes.extend_from_slice(&self.ack_number.to_be_bytes());
         bytes.extend_from_slice(&self.arwnd.to_be_bytes());
         bytes.extend_from_slice(&[self.flags.to_bytes()]);
+        bytes.extend_from_slice(&[0 as u8]);
         bytes
     }
 
@@ -32,10 +43,11 @@ impl PrimaryHeader {
         let flags = PacketFlags::new(bytes[14]);
         let next_header: u8 = bytes[15];
 
-        PrimaryHeader::new(connection_id, ack_number, arwnd, flags)
+        PrimaryHeader::new(connection_id, seq_number, ack_number, arwnd, flags)
     }
 }
 
+#[derive(Debug)]
 pub struct PacketFlags {
     pub init: bool,
     pub cookie: bool,
@@ -77,7 +89,7 @@ impl PacketFlags {
         out
     }
 }
-
+#[derive(Debug)]
 pub struct EncryptionHeader {
     pub number_supported_encryption: u8,
 }
@@ -91,6 +103,7 @@ impl EncryptionHeader {
     }
 }
 
+#[derive(Debug)]
 pub struct SignatureHeader {
     pub length: u16,
     pub signature: Vec<u8>,
@@ -105,6 +118,7 @@ impl SignatureHeader {
     }
 }
 
+#[derive(Debug)]
 pub struct Packet {
     header: PrimaryHeader,
     encryption_header: Option<EncryptionHeader>,

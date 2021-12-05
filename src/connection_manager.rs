@@ -1,75 +1,82 @@
 use crate::connection::Connection;
 use crate::constants::MAX_PACKET_SIZE;
-use crate::packet::Packet;
-use std::cell::RefCell;
+use crate::packet::{Packet, PacketFlags, PrimaryHeader};
 use std::collections::HashMap;
-use std::net::UdpSocket;
+use std::net::{SocketAddr, ToSocketAddrs, UdpSocket};
+use std::sync::Arc;
 use std::sync::Mutex;
 use std::thread;
 
 pub struct ConnectionManager {
-    connections: Mutex<HashMap<u32, Connection>>,
-    socket: Mutex<UdpSocket>,
+    connections: Arc<Mutex<HashMap<u32, Connection>>>,
+    connection_queue: Arc<Mutex<Vec<Connection>>>,
+    socket: UdpSocket,
 }
 
 impl ConnectionManager {
     pub fn new(socket: UdpSocket) -> Self {
         ConnectionManager {
-            socket: Mutex::new(socket),
-            connections: Mutex::new(HashMap::new()),
+            socket,
+            connections: Arc::new(Mutex::new(HashMap::new())),
+            connection_queue: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
     pub fn start(&self) {
-        let socket = self.connections.get_mut();
+        let socket = self.socket.try_clone().unwrap();
+
+        let connection_queue = Arc::clone(&self.connection_queue);
 
         thread::spawn(move || loop {
             let mut buf = [0; MAX_PACKET_SIZE];
 
             loop {
+                println!("Waiting for a new packet");
                 let (amt, src) = socket.recv_from(&mut buf).unwrap();
+
                 let packet = Packet::from_bytes(&buf[..amt]);
 
-                //self.receive_delegate(packet);
+                // If the connection id is 0, it means that we are receiving a new connection
+                // request.
+                // Therefore, we need to add the new connection request to the connection queue.
+                if (packet.get_id()) == 0 {
+                    println!("We received a new init packet!");
+
+                    let mut connection_queue = connection_queue.lock().unwrap();
+                    let connection = Connection::new(src);
+                    connection_queue.push(connection);
+                }
+
+                // Push the received packet to the respective connection
             }
         });
     }
 
-    pub fn accept(&self) {
+    pub fn accept(&self) -> Connection {
+        let connection_queue = Arc::clone(&self.connection_queue);
+
         loop {
-            let mut buf = [0; MAX_PACKET_SIZE];
-
-            let (amt, src) = self.socket.lock().unwrap().recv_from(&mut buf).unwrap();
-            let packet = Packet::from_bytes(&buf[..amt]);
-
-            if packet.get_id() == 0 {
-                break;
+            match connection_queue.lock().unwrap().pop() {
+                Some(connection) => {
+                    return connection;
+                }
+                None => {}
             }
-
-            self.receive_delegate(packet);
         }
-
-        // Initiate new connection
     }
 
-    fn add_connection(&mut self, connection: Connection) -> u32 {
-        let id = self.connections.len() as u32;
-        self.connections.insert(id, connection);
-        id
-    }
+    pub fn connect<A: ToSocketAddrs>(&self, addr: A) {
+        // We want to initiate a new connection.
+        // To do this, we need to send an init packet to the server
 
-    fn get_connection(&mut self, id: u32) -> Option<&mut Connection> {
-        self.connections.get_mut(&id)
-    }
+        let mut flags = PacketFlags::new(0);
+        flags.init = true;
 
-    fn remove_connection(&mut self, id: u32) -> Option<Connection> {
-        self.connections.remove(&id)
-    }
+        let packet = Packet::new(PrimaryHeader::new(0, 0, 0, 0, flags), None, None, vec![]);
 
-    fn receive_delegate(&mut self, packet: Packet) {
-        let id = packet.get_id();
-        if let Some(connection) = self.get_connection(id) {
-            connection.receive(packet);
-        }
+        println!("Sending packet: {:?}", packet);
+
+        let payload = packet.to_bytes();
+        &self.socket.send_to(&*payload, addr);
     }
 }

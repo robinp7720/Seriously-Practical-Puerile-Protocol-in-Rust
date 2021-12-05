@@ -1,18 +1,18 @@
 use crate::packet::Packet;
 use std::net::SocketAddr;
-use std::net::UdpSocket;
 
 pub struct Connection {
     addr: SocketAddr,
-    socket: UdpSocket,
     connection_id: u32,
 }
 
 impl Connection {
-    pub fn new(addr: SocketAddr, socket: UdpSocket, connection_id: u32) -> Connection {
+    pub fn new(addr: SocketAddr) -> Connection {
+        // Generate a random connection id
+        let connection_id = rand::random();
+
         Connection {
             addr,
-            socket,
             connection_id,
         }
     }
