@@ -1,22 +1,34 @@
 use crate::packet::{Packet, PacketFlags, PrimaryHeader};
 use std::net::{SocketAddr, UdpSocket};
+use std::sync::mpsc::{Receiver, Sender};
 
 pub struct Connection {
     addr: SocketAddr,
     connection_id: u32,
     socket: UdpSocket,
+    sender: Option<Receiver<Vec<u8>>>,
+    receiver: Option<Sender<Vec<u8>>>,
 }
 
 impl Connection {
-    pub fn new(addr: SocketAddr, socket: UdpSocket) -> Connection {
-        // Generate a random connection id
-        let connection_id = rand::random();
+    pub fn new(addr: SocketAddr, socket: UdpSocket, connection_id: Option<u32>) -> Connection {
+        let connection_id = match connection_id {
+            None => rand::random(),
+            Some(connection_id) => connection_id,
+        };
 
         Connection {
             addr,
             connection_id,
             socket,
+            sender: None,
+            receiver: None,
         }
+    }
+
+    pub fn bind_channel(&mut self, sender: Receiver<Vec<u8>>, receiver: Sender<Vec<u8>>) {
+        self.sender = Some(sender);
+        self.receiver = Some(receiver);
     }
 
     pub fn send_init_ack(&self) {

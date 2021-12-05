@@ -157,7 +157,7 @@ impl Packet {
         out
     }
 
-    pub fn get_id(&self) -> u32 {
+    pub fn get_connection_id(&self) -> u32 {
         self.header.connection_id
     }
 

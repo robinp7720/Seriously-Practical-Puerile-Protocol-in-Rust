@@ -1,7 +1,8 @@
 mod connection;
+mod connection_interface;
 mod connection_manager;
 mod constants;
-pub mod packet;
+mod packet;
 
 use connection::Connection;
 
@@ -10,7 +11,7 @@ use std::io::Error;
 use std::net::{SocketAddr, ToSocketAddrs, UdpSocket};
 
 pub struct SPPPConnection {
-    connection: Connection,
+    connection: connection_interface::ConnectionInterface,
 }
 
 pub struct SPPPSocket {
@@ -44,10 +45,10 @@ impl SPPPSocket {
         Ok(SPPPConnection { connection })
     }
 
-    pub fn connect<A: ToSocketAddrs>(&self, addr: A) -> Result<(), Error> {
-        let connection = self.connection_manager.connect(addr);
+    pub fn connect<A: ToSocketAddrs>(&self, addr: A) -> Result<SPPPConnection, Error> {
+        let connection = self.connection_manager.connect(addr)?;
 
-        Ok(())
+        Ok(SPPPConnection { connection })
     }
 }
 

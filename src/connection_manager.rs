@@ -1,10 +1,13 @@
 use crate::connection::Connection;
+use crate::connection_interface::ConnectionInterface;
 use crate::constants::MAX_PACKET_SIZE;
 use crate::packet::{Packet, PacketFlags, PrimaryHeader};
 use std::collections::HashMap;
+use std::io::{Error, ErrorKind};
 use std::net::{SocketAddr, ToSocketAddrs, UdpSocket};
-use std::sync::Arc;
+use std::sync::mpsc::{Receiver, Sender};
 use std::sync::Mutex;
+use std::sync::{mpsc, Arc};
 use std::thread;
 
 pub struct ConnectionManager {
@@ -26,6 +29,7 @@ impl ConnectionManager {
         let socket = self.socket.try_clone().unwrap();
 
         let connection_queue = Arc::clone(&self.connection_queue);
+        let connections = Arc::clone(&self.connections);
 
         thread::spawn(move || loop {
             let mut buf = [0; MAX_PACKET_SIZE];
@@ -39,12 +43,13 @@ impl ConnectionManager {
                 // If the connection id is 0, it means that we are receiving a new connection
                 // request.
                 // Therefore, we need to add the new connection request to the connection queue.
-                if packet.get_id() == 0 {
+                if packet.get_connection_id() == 0 && packet.is_init() {
                     println!("We received a new init packet!");
 
+                    // Insert this packet into the new connection queue
                     let mut connection_queue = connection_queue.lock().unwrap();
 
-                    let connection = Connection::new(src, socket.try_clone().unwrap());
+                    let connection = Connection::new(src, socket.try_clone().unwrap(), None);
                     connection.send_init_ack();
                     connection_queue.push(connection);
 
@@ -53,6 +58,19 @@ impl ConnectionManager {
 
                 if packet.is_init() && packet.is_ack() {
                     println!("We received a new init ack packet!");
+
+                    let connection = Connection::new(
+                        src,
+                        socket.try_clone().unwrap(),
+                        Some(packet.get_connection_id()),
+                    );
+
+                    connections
+                        .lock()
+                        .unwrap()
+                        .insert(connection.get_connection_id(), connection);
+
+                    println!("{:?}", connections.lock().unwrap().keys());
 
                     continue;
                 }
@@ -64,26 +82,32 @@ impl ConnectionManager {
         });
     }
 
-    pub fn accept(&self) -> Connection {
+    pub fn accept(&self) -> ConnectionInterface {
         let connection_queue = Arc::clone(&self.connection_queue);
 
         loop {
             match connection_queue.lock().unwrap().pop() {
-                Some(connection) => {
+                Some(mut connection) => {
+                    let (sender_tx, sender_rx): (Sender<Vec<u8>>, Receiver<Vec<u8>>) =
+                        mpsc::channel();
+                    let (receiver_tx, receiver_rx): (Sender<Vec<u8>>, Receiver<Vec<u8>>) =
+                        mpsc::channel();
+
+                    connection.bind_channel(sender_rx, receiver_tx);
+
                     self.connections
                         .lock()
                         .unwrap()
                         .insert(connection.get_connection_id(), connection);
 
-                    // TODO: Return reference to this connection
-                    //return connection;
+                    return ConnectionInterface::new(sender_tx, receiver_rx);
                 }
                 None => {}
             }
         }
     }
 
-    pub fn connect<A: ToSocketAddrs>(&self, addr: A) {
+    pub fn connect<A: ToSocketAddrs>(&self, addr: A) -> Result<ConnectionInterface, &str> {
         // We want to initiate a new connection.
         // To do this, we need to send an init packet to the server
 
@@ -98,6 +122,24 @@ impl ConnectionManager {
         &self.socket.send_to(&*payload, addr);
 
         // Wait for a response
-        loop {}
+        loop {
+            // TODO: This will only work if the client connects to one server
+            //       I'm assuming this won't really be a problem, but it's a limitation non the less
+            if self.connections.lock().unwrap().len() == 0 {
+                continue;
+            }
+
+            break;
+        }
+        for connection in self.connections.lock().unwrap().values_mut() {
+            let (sender_tx, sender_rx): (Sender<Vec<u8>>, Receiver<Vec<u8>>) = mpsc::channel();
+            let (receiver_tx, receiver_rx): (Sender<Vec<u8>>, Receiver<Vec<u8>>) = mpsc::channel();
+
+            connection.bind_channel(sender_rx, receiver_tx);
+
+            return Ok(ConnectionInterface::new(sender_tx, receiver_rx));
+        }
+
+        Err("Couldn't connect")
     }
 }
