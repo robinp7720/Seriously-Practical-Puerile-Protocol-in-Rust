@@ -169,4 +169,12 @@ impl Packet {
             signature_header: None,
         }
     }
+
+    pub fn is_init(&self) -> bool {
+        self.header.flags.init
+    }
+
+    pub fn is_ack(&self) -> bool {
+        self.header.flags.ack
+    }
 }

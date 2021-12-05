@@ -39,16 +39,27 @@ impl ConnectionManager {
                 // If the connection id is 0, it means that we are receiving a new connection
                 // request.
                 // Therefore, we need to add the new connection request to the connection queue.
-                if (packet.get_id()) == 0 {
+                if packet.get_id() == 0 {
                     println!("We received a new init packet!");
 
                     let mut connection_queue = connection_queue.lock().unwrap();
+
                     let connection = Connection::new(src, socket.try_clone().unwrap());
                     connection.send_init_ack();
                     connection_queue.push(connection);
+
+                    continue;
+                }
+
+                if packet.is_init() && packet.is_ack() {
+                    println!("We received a new init ack packet!");
+
+                    continue;
                 }
 
                 // Push the received packet to the respective connection
+                println!("We received a new packet!");
+                println!("{:?}", packet);
             }
         });
     }
@@ -59,7 +70,13 @@ impl ConnectionManager {
         loop {
             match connection_queue.lock().unwrap().pop() {
                 Some(connection) => {
-                    return connection;
+                    self.connections
+                        .lock()
+                        .unwrap()
+                        .insert(connection.get_connection_id(), connection);
+
+                    // TODO: Return reference to this connection
+                    //return connection;
                 }
                 None => {}
             }
@@ -79,5 +96,8 @@ impl ConnectionManager {
 
         let payload = packet.to_bytes();
         &self.socket.send_to(&*payload, addr);
+
+        // Wait for a response
+        loop {}
     }
 }
