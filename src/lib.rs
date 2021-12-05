@@ -9,9 +9,27 @@ use connection::Connection;
 use crate::connection_manager::ConnectionManager;
 use std::io::Error;
 use std::net::{SocketAddr, ToSocketAddrs, UdpSocket};
+use std::sync::{Arc, Mutex};
 
 pub struct SPPPConnection {
-    connection: connection_interface::ConnectionInterface,
+    connection: Arc<Mutex<Connection>>,
+}
+
+impl SPPPConnection {
+    pub fn send(&self, payload: Vec<u8>) {
+        let connection = self.connection.lock().unwrap();
+        connection.send_data(payload);
+    }
+
+    pub fn recv(&mut self) -> Result<Vec<u8>, Error> {
+        while (!self.canRecv()) {}
+
+        Ok(self.connection.lock().unwrap().recv())
+    }
+
+    pub fn canRecv(&self) -> bool {
+        self.connection.lock().unwrap().canRecv()
+    }
 }
 
 pub struct SPPPSocket {

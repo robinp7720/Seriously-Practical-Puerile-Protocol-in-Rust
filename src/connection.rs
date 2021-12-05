@@ -7,8 +7,6 @@ pub struct Connection {
     addr: SocketAddr,
     connection_id: u32,
     socket: UdpSocket,
-    sender: Option<Receiver<Vec<u8>>>,
-    receiver: Option<Sender<Vec<u8>>>,
     incoming: Mutex<Vec<Packet>>,
 }
 
@@ -23,20 +21,55 @@ impl Connection {
             addr,
             connection_id,
             socket,
-            sender: None,
-            receiver: None,
             incoming: Mutex::new(vec![]),
         }
     }
 
-    pub fn bind_channel(&mut self, sender: Receiver<Vec<u8>>, receiver: Sender<Vec<u8>>) {
-        self.sender = Some(sender);
-        self.receiver = Some(receiver);
-    }
-
     pub fn receive_packet(&mut self, packet: Packet) {
         let mut incoming = self.incoming.lock().unwrap();
+
+        println!("we have recevied a data packet! {:?}", packet.get_payload());
+
         incoming.push(packet);
+    }
+
+    pub fn canRecv(&self) -> bool {
+        let incoming = self.incoming.lock().unwrap();
+
+        //println!("{}, {}", incoming.len(), incoming.is_empty());
+
+        return !incoming.is_empty();
+    }
+
+    pub fn recv(&mut self) -> Vec<u8> {
+        let mut incoming = self.incoming.lock().unwrap();
+        let mut output: Vec<u8> = Vec::new();
+
+        for packet in incoming.iter() {
+            output.append(&mut packet.get_payload());
+        }
+
+        incoming.clear();
+
+        return output;
+    }
+
+    fn send_packet(&self, packet: Packet) {
+        println!("sending packet to: {}", self.addr);
+        self.socket.send_to(&*packet.to_bytes(), self.addr);
+    }
+
+    pub fn send_data(&self, payload: Vec<u8>) {
+        let mut flags = PacketFlags::new(0);
+
+        let packet = Packet::new(
+            PrimaryHeader::new(self.connection_id, 0, 0, 0, flags),
+            None,
+            None,
+            payload,
+        );
+
+        self.send_packet(packet);
     }
 
     pub fn send_init_ack(&self) {

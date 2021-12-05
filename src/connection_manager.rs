@@ -11,7 +11,7 @@ use std::sync::{mpsc, Arc};
 use std::thread;
 
 pub struct ConnectionManager {
-    connections: Arc<Mutex<HashMap<u32, Connection>>>,
+    connections: Arc<Mutex<HashMap<u32, Arc<Mutex<Connection>>>>>,
     connection_queue: Arc<Mutex<Vec<Connection>>>,
     socket: UdpSocket,
 }
@@ -65,10 +65,10 @@ impl ConnectionManager {
                         Some(packet.get_connection_id()),
                     );
 
-                    connections
-                        .lock()
-                        .unwrap()
-                        .insert(connection.get_connection_id(), connection);
+                    connections.lock().unwrap().insert(
+                        connection.get_connection_id(),
+                        Arc::new(Mutex::new(connection)),
+                    );
 
                     println!("{:?}", connections.lock().unwrap().keys());
 
@@ -82,42 +82,49 @@ impl ConnectionManager {
                 // No new connection needs to be setup.
                 // This means that the packet can be handled by the connection with the same
                 // connection_id
-                connections
-                    .lock()
-                    .unwrap()
-                    .get_mut(&packet.get_connection_id())
-                    .unwrap()
-                    .receive_packet(packet);
+                let mut connectionArc = Arc::clone(
+                    &connections
+                        .lock()
+                        .unwrap()
+                        .get(&packet.get_connection_id())
+                        .unwrap(),
+                );
+
+                println!("uh oh");
+
+                let mut connection = connectionArc.lock().unwrap();
+
+                println!("Forwarding packet to connection handler");
+                connection.receive_packet(packet);
             }
         });
     }
 
-    pub fn accept(&self) -> ConnectionInterface {
+    pub fn accept(&self) -> Arc<Mutex<Connection>> {
         let connection_queue = Arc::clone(&self.connection_queue);
 
         loop {
             match connection_queue.lock().unwrap().pop() {
                 Some(mut connection) => {
-                    let (sender_tx, sender_rx): (Sender<Vec<u8>>, Receiver<Vec<u8>>) =
-                        mpsc::channel();
-                    let (receiver_tx, receiver_rx): (Sender<Vec<u8>>, Receiver<Vec<u8>>) =
-                        mpsc::channel();
+                    let connection_id = connection.get_connection_id();
 
-                    connection.bind_channel(sender_rx, receiver_tx);
+                    self.connections.lock().unwrap().insert(
+                        connection.get_connection_id(),
+                        Arc::new(Mutex::new(connection)),
+                    );
 
-                    self.connections
-                        .lock()
-                        .unwrap()
-                        .insert(connection.get_connection_id(), connection);
+                    let mut connections = self.connections.lock().unwrap();
 
-                    return ConnectionInterface::new(sender_tx, receiver_rx);
+                    let connection = connections.get_mut(&connection_id).unwrap();
+
+                    return connection.clone();
                 }
                 None => {}
             }
         }
     }
 
-    pub fn connect<A: ToSocketAddrs>(&self, addr: A) -> Result<ConnectionInterface, &str> {
+    pub fn connect<A: ToSocketAddrs>(&self, addr: A) -> Result<Arc<Mutex<Connection>>, Error> {
         // We want to initiate a new connection.
         // To do this, we need to send an init packet to the server
 
@@ -141,15 +148,11 @@ impl ConnectionManager {
 
             break;
         }
+
         for connection in self.connections.lock().unwrap().values_mut() {
-            let (sender_tx, sender_rx): (Sender<Vec<u8>>, Receiver<Vec<u8>>) = mpsc::channel();
-            let (receiver_tx, receiver_rx): (Sender<Vec<u8>>, Receiver<Vec<u8>>) = mpsc::channel();
-
-            connection.bind_channel(sender_rx, receiver_tx);
-
-            return Ok(ConnectionInterface::new(sender_tx, receiver_rx));
+            return Ok(connection.clone());
         }
 
-        Err("Couldn't connect")
+        Err(Error::new(std::io::ErrorKind::ConnectionRefused, "hello"))
     }
 }

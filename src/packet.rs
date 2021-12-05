@@ -161,6 +161,10 @@ impl Packet {
         self.header.connection_id
     }
 
+    pub fn get_payload(&self) -> Vec<u8> {
+        self.payload.to_vec()
+    }
+
     pub fn from_bytes(bytes: &[u8]) -> Self {
         Packet {
             header: PrimaryHeader::from_bytes(&*bytes),
