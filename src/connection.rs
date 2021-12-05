@@ -1,6 +1,7 @@
 use crate::packet::{Packet, PacketFlags, PrimaryHeader};
 use std::net::{SocketAddr, UdpSocket};
 use std::sync::mpsc::{Receiver, Sender};
+use std::sync::Mutex;
 
 pub struct Connection {
     addr: SocketAddr,
@@ -8,6 +9,7 @@ pub struct Connection {
     socket: UdpSocket,
     sender: Option<Receiver<Vec<u8>>>,
     receiver: Option<Sender<Vec<u8>>>,
+    incoming: Mutex<Vec<Packet>>,
 }
 
 impl Connection {
@@ -23,12 +25,18 @@ impl Connection {
             socket,
             sender: None,
             receiver: None,
+            incoming: Mutex::new(vec![]),
         }
     }
 
     pub fn bind_channel(&mut self, sender: Receiver<Vec<u8>>, receiver: Sender<Vec<u8>>) {
         self.sender = Some(sender);
         self.receiver = Some(receiver);
+    }
+
+    pub fn receive_packet(&mut self, packet: Packet) {
+        let mut incoming = self.incoming.lock().unwrap();
+        incoming.push(packet);
     }
 
     pub fn send_init_ack(&self) {

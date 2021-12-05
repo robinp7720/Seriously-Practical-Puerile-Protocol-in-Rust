@@ -78,6 +78,16 @@ impl ConnectionManager {
                 // Push the received packet to the respective connection
                 println!("We received a new packet!");
                 println!("{:?}", packet);
+
+                // No new connection needs to be setup.
+                // This means that the packet can be handled by the connection with the same
+                // connection_id
+                connections
+                    .lock()
+                    .unwrap()
+                    .get_mut(&packet.get_connection_id())
+                    .unwrap()
+                    .receive_packet(packet);
             }
         });
     }
