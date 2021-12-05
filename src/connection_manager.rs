@@ -43,7 +43,8 @@ impl ConnectionManager {
                     println!("We received a new init packet!");
 
                     let mut connection_queue = connection_queue.lock().unwrap();
-                    let connection = Connection::new(src);
+                    let connection = Connection::new(src, socket.try_clone().unwrap());
+                    connection.send_init_ack();
                     connection_queue.push(connection);
                 }
 
