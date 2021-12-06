@@ -238,6 +238,10 @@ impl Connection {
     }
 
     pub fn handle_ack(&mut self, packet: &Packet) {
+        if self.get_connection_state() == ConnectionState::FinWait1 {
+            self.set_connection_state(ConnectionState::FinWait2)
+        }
+
         self.in_transit
             .lock()
             .unwrap()
@@ -381,6 +385,8 @@ impl Connection {
             None,
             vec![],
         );
+
+        self.wait_for_last_ack();
 
         self.send_packet(packet);
 
