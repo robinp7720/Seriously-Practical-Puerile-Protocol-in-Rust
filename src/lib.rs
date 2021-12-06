@@ -6,6 +6,7 @@ mod packet;
 
 use connection::Connection;
 
+use crate::connection::ConnectionState;
 use crate::connection_manager::ConnectionManager;
 use std::io::Error;
 use std::net::{SocketAddr, ToSocketAddrs, UdpSocket};
@@ -60,6 +61,8 @@ impl SPPPSocket {
     pub fn accept(&self) -> Result<SPPPConnection, Error> {
         let connection = self.connection_manager.accept();
 
+        while connection.lock().unwrap().get_connection_state() != ConnectionState::Established {}
+
         Ok(SPPPConnection { connection })
     }
 
@@ -67,6 +70,8 @@ impl SPPPSocket {
         let connection = self.connection_manager.connect(addr)?;
 
         connection.lock().unwrap().send_cookie_echo();
+
+        while connection.lock().unwrap().get_connection_state() != ConnectionState::Established {}
 
         Ok(SPPPConnection { connection })
     }

@@ -3,7 +3,7 @@ use crate::constants::MAX_PAYLOAD_SIZE;
 use crate::cookie::ConnectionCookie;
 use crate::packet::{Packet, PacketFlags, PrimaryHeader};
 use rand::thread_rng;
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::net::{SocketAddr, UdpSocket};
 use std::sync::mpsc::{Receiver, Sender};
 use std::sync::TryLockError::Poisoned;
@@ -11,7 +11,8 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::thread::current;
 
-enum ConnectionState {
+#[derive(Eq, PartialEq, Copy, Clone)]
+pub enum ConnectionState {
     CookieWait,
     CookieEchoed,
     Established,
@@ -30,8 +31,11 @@ pub struct Connection {
     socket: UdpSocket,
     incoming: Mutex<VecDeque<Packet>>,
     sending_queue: Arc<Mutex<VecDeque<Packet>>>,
-    connection_state: ConnectionState,
+    in_transit: Arc<Mutex<HashMap<u32, Packet>>>,
+    connection_state: Mutex<ConnectionState>,
     cookie: Option<ConnectionCookie>,
+    current_send_sequence_number: Arc<Mutex<u32>>,
+    next_expected_ack_number: Arc<Mutex<u32>>,
 }
 
 impl Connection {
@@ -52,13 +56,17 @@ impl Connection {
             socket,
             incoming: Mutex::new(VecDeque::new()),
             sending_queue: Arc::new(Mutex::new(VecDeque::new())),
-            connection_state: ConnectionState::CookieWait,
+            in_transit: Arc::new(Mutex::new(HashMap::new())),
+            connection_state: Mutex::new(ConnectionState::CookieWait),
             cookie,
+            current_send_sequence_number: Arc::new(Mutex::new(0)),
+            next_expected_ack_number: Arc::new(Mutex::new(0)),
         }
     }
 
     pub fn start_connection_thread(&self) {
         let sending_queue = self.sending_queue.clone();
+        let in_transit = self.in_transit.clone();
         let addr = self.addr.clone();
         let socket = self.socket.try_clone().unwrap();
 
@@ -66,6 +74,13 @@ impl Connection {
             loop {
                 if let Some(packet) = sending_queue.lock().unwrap().pop_front() {
                     socket.send_to(&*packet.to_bytes(), addr);
+
+                    // We need to keep track of which packets are currently in transit
+                    // so we can accept acknowledgements for them later
+                    in_transit
+                        .lock()
+                        .unwrap()
+                        .insert(packet.get_sequence_number(), packet);
                 }
 
                 // TODO: Handle ACKs
@@ -101,6 +116,15 @@ impl Connection {
             return;
         }
 
+        // HANDLE DATA ACK packets
+        if packet.is_ack() {
+            self.handle_ack(&packet);
+        }
+
+        if packet.payload_size() > 0 {
+            self.send_ack(packet.get_sequence_number());
+        }
+
         self.insert_packet_incoming_queue(packet);
     }
 
@@ -118,6 +142,14 @@ impl Connection {
         incoming.push_back(packet);
     }
 
+    fn set_connection_state(&self, state: ConnectionState) {
+        *self.connection_state.lock().unwrap() = state;
+    }
+
+    pub fn get_connection_state(&self) -> ConnectionState {
+        *self.connection_state.lock().unwrap()
+    }
+
     pub fn handle_cookie_echo(&mut self, packet: Packet) {
         let cookie = ConnectionCookie::from_bytes(packet.get_payload());
 
@@ -133,13 +165,20 @@ impl Connection {
             return;
         }
 
-        self.connection_state = ConnectionState::Established;
+        self.set_connection_state(ConnectionState::Established);
 
         self.send_cookie_ack();
     }
 
     pub fn handle_cookie_ack(&mut self, packet: Packet) {
-        self.connection_state = ConnectionState::Established;
+        self.set_connection_state(ConnectionState::Established);
+    }
+
+    pub fn handle_ack(&mut self, packet: &Packet) {
+        self.in_transit
+            .lock()
+            .unwrap()
+            .remove(&packet.get_ack_number());
     }
 
     pub fn can_recv(&self) -> bool {
@@ -163,8 +202,34 @@ impl Connection {
         return output;
     }
 
-    fn send_packet(&self, packet: Packet) {
-        self.socket.send_to(&*packet.to_bytes(), self.addr);
+    fn send_packet(&self, mut packet: Packet) {
+        let mut seq_num = self.current_send_sequence_number.lock().unwrap();
+
+        // Set the sequence number for the packet
+        packet.set_sequence_number(*seq_num);
+        *seq_num += packet.payload_size();
+
+        self.sending_queue.lock().unwrap().push_back(packet);
+    }
+
+    fn send_ack(&self, seq_num: u32) {
+        let mut flags = PacketFlags::new(0);
+        flags.ack = true;
+
+        let packet = Packet::new(
+            PrimaryHeader::new(
+                self.connection_id,
+                *self.current_send_sequence_number.lock().unwrap(),
+                seq_num,
+                0,
+                flags,
+            ),
+            None,
+            None,
+            vec![],
+        );
+
+        self.send_packet(packet);
     }
 
     pub fn send_data(&self, payload: Vec<u8>) {
@@ -175,11 +240,7 @@ impl Connection {
         let chunks: Vec<&[u8]> = payload.chunks(MAX_PAYLOAD_SIZE).collect();
 
         for chunk in chunks {
-            println!("Sending to send queue: {:?}", chunk);
-            self.sending_queue
-                .lock()
-                .unwrap()
-                .push_back(self.create_packet_for_data(Vec::from(chunk)))
+            self.send_packet(self.create_packet_for_data(Vec::from(chunk)));
         }
     }
 
@@ -226,7 +287,8 @@ impl Connection {
         );
 
         self.send_packet(packet);
-        self.connection_state = ConnectionState::CookieEchoed;
+
+        self.set_connection_state(ConnectionState::CookieEchoed)
     }
 
     pub fn send_cookie_ack(&self) {
