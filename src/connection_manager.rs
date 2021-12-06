@@ -27,7 +27,6 @@ impl ConnectionManager {
 
     pub fn start(&self) {
         self.start_recv_thread();
-
     }
 
     fn start_recv_thread(&self) {
@@ -84,16 +83,17 @@ impl ConnectionManager {
                 // No new connection needs to be setup.
                 // This means that the packet can be handled by the connection with the same
                 // connection_id
-                let mut connectionArc = Arc::clone(
-                    &connections
-                        .lock()
-                        .unwrap()
-                        .get(&packet.get_connection_id())
-                        .unwrap(),
-                );
+                let connections = connections.lock().unwrap();
+                let connection = connections.get(&packet.get_connection_id());
+                let connection = match connection {
+                    None => {
+                        println!("We received data from a non existing connection. Ignoring");
+                        continue;
+                    }
+                    Some(connection) => connection.clone(),
+                };
 
-                let mut connection = connectionArc.lock().unwrap();
-                connection.receive_packet(packet);
+                connection.lock().unwrap().receive_packet(packet);
             }
         });
     }

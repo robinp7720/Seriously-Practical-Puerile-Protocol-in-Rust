@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 pub const MAX_PAYLOAD_SIZE: usize = 1200;
 pub const MAX_PRIMARY_HEADER_SIZE: usize = 128;
 pub const MAX_CHANGE_KEY_HEADER_SIZE: usize = 64;

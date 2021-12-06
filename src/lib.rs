@@ -1,3 +1,5 @@
+#![feature(hash_drain_filter)]
+
 mod connection;
 mod connection_manager;
 mod constants;
