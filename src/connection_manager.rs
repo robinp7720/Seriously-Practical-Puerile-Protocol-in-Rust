@@ -35,7 +35,6 @@ impl ConnectionManager {
             let mut buf = [0; MAX_PACKET_SIZE];
 
             loop {
-                println!("Waiting for a new packet");
                 let (amt, src) = socket.recv_from(&mut buf).unwrap();
 
                 let packet = Packet::from_bytes(&buf[..amt]);
@@ -44,8 +43,6 @@ impl ConnectionManager {
                 // request.
                 // Therefore, we need to add the new connection request to the connection queue.
                 if packet.get_connection_id() == 0 && packet.is_init() {
-                    println!("We received a new init packet!");
-
                     // Insert this packet into the new connection queue
                     let mut connection_queue = connection_queue.lock().unwrap();
 
@@ -57,8 +54,6 @@ impl ConnectionManager {
                 }
 
                 if packet.is_init() && packet.is_ack() {
-                    println!("We received a new init ack packet!");
-
                     let connection = Connection::new(
                         src,
                         socket.try_clone().unwrap(),
@@ -75,10 +70,6 @@ impl ConnectionManager {
                     continue;
                 }
 
-                // Push the received packet to the respective connection
-                println!("We received a new packet!");
-                println!("{:?}", packet);
-
                 // No new connection needs to be setup.
                 // This means that the packet can be handled by the connection with the same
                 // connection_id
@@ -90,11 +81,7 @@ impl ConnectionManager {
                         .unwrap(),
                 );
 
-                println!("uh oh");
-
                 let mut connection = connectionArc.lock().unwrap();
-
-                println!("Forwarding packet to connection handler");
                 connection.receive_packet(packet);
             }
         });
@@ -132,8 +119,6 @@ impl ConnectionManager {
         flags.init = true;
 
         let packet = Packet::new(PrimaryHeader::new(0, 0, 0, 0, flags), None, None, vec![]);
-
-        println!("Sending packet: {:?}", packet);
 
         let payload = packet.to_bytes();
         &self.socket.send_to(&*payload, addr);
