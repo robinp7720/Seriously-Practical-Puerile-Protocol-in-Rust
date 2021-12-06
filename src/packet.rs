@@ -165,6 +165,10 @@ impl Packet {
         self.payload.to_vec()
     }
 
+    pub fn get_sequence_number(&self) -> u32 {
+        self.header.seq_number
+    }
+
     pub fn from_bytes(bytes: &[u8]) -> Self {
         Packet {
             header: PrimaryHeader::from_bytes(&*bytes),

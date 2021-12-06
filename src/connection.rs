@@ -1,14 +1,15 @@
-use std::collections::VecDeque;
 use crate::connection::ConnectionState::CookieWait;
 use crate::constants::MAX_PAYLOAD_SIZE;
 use crate::cookie::ConnectionCookie;
 use crate::packet::{Packet, PacketFlags, PrimaryHeader};
+use rand::thread_rng;
+use std::collections::VecDeque;
 use std::net::{SocketAddr, UdpSocket};
 use std::sync::mpsc::{Receiver, Sender};
-use std::sync::{Arc, Mutex};
 use std::sync::TryLockError::Poisoned;
+use std::sync::{Arc, Mutex};
 use std::thread;
-use rand::thread_rng;
+use std::thread::current;
 
 enum ConnectionState {
     CookieWait,
@@ -100,7 +101,19 @@ impl Connection {
             return;
         }
 
+        self.insert_packet_incoming_queue(packet);
+    }
+
+    pub fn insert_packet_incoming_queue(&self, packet: Packet) {
         let mut incoming = self.incoming.lock().unwrap();
+
+        for (i, cur) in incoming.iter().enumerate() {
+            if cur.get_sequence_number() > packet.get_sequence_number() {
+                incoming.insert(i, packet);
+
+                return;
+            }
+        }
 
         incoming.push_back(packet);
     }
@@ -163,7 +176,10 @@ impl Connection {
 
         for chunk in chunks {
             println!("Sending to send queue: {:?}", chunk);
-            self.sending_queue.lock().unwrap().push_back(self.create_packet_for_data(Vec::from(chunk)))
+            self.sending_queue
+                .lock()
+                .unwrap()
+                .push_back(self.create_packet_for_data(Vec::from(chunk)))
         }
     }
 
@@ -239,4 +255,33 @@ impl Connection {
     }
 
     pub fn receive(&self, packet: Packet) {}
+}
+
+#[cfg(test)]
+mod packet {
+    use crate::connection::Connection;
+    use crate::packet::{Packet, PacketFlags, PrimaryHeader};
+    use std::net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket};
+
+    #[test]
+    pub fn append_to_send_queue() {
+        let addr = SocketAddr::new(IpAddr::from(Ipv4Addr::new(0, 0, 0, 0)), 1200);
+        let con = Connection::new(addr, UdpSocket::bind(addr).unwrap(), None, None);
+
+        for i in [0, 3, 2, 1, 6, 4, 5, 9, 8, 7] {
+            con.insert_packet_incoming_queue(Packet::new(
+                PrimaryHeader::new(0, i, 0, 0, PacketFlags::new(0)),
+                None,
+                None,
+                vec![],
+            ));
+        }
+
+        for (i, cur) in con.incoming.lock().unwrap().iter().enumerate() {
+            assert_eq!(i as u32, cur.get_sequence_number());
+        }
+    }
+
+    #[test]
+    pub fn test_to_bytes() {}
 }
