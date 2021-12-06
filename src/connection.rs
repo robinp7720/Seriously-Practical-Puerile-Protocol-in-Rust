@@ -1,5 +1,5 @@
 use crate::connection::ConnectionState::CookieWait;
-use crate::constants::MAX_PAYLOAD_SIZE;
+use crate::constants::{MAX_PAYLOAD_SIZE, RETRANSMISSION_TIMEOUT};
 use crate::cookie::ConnectionCookie;
 use crate::packet::{Packet, PacketFlags, PrimaryHeader};
 use rand::thread_rng;
@@ -10,6 +10,7 @@ use std::sync::TryLockError::Poisoned;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::thread::current;
+use std::time::{Duration, SystemTime};
 
 #[derive(Eq, PartialEq, Copy, Clone)]
 pub enum ConnectionState {
@@ -31,11 +32,16 @@ pub struct Connection {
     socket: UdpSocket,
     incoming: Mutex<VecDeque<Packet>>,
     sending_queue: Arc<Mutex<VecDeque<Packet>>>,
-    in_transit: Arc<Mutex<HashMap<u32, Packet>>>,
+    in_transit: Arc<Mutex<HashMap<u32, TimeoutPacket>>>,
     connection_state: Mutex<ConnectionState>,
     cookie: Option<ConnectionCookie>,
     current_send_sequence_number: Arc<Mutex<u32>>,
     next_expected_ack_number: Arc<Mutex<u32>>,
+}
+
+struct TimeoutPacket {
+    send_time: SystemTime,
+    packet: Packet,
 }
 
 impl Connection {
@@ -64,6 +70,11 @@ impl Connection {
         }
     }
 
+    pub fn start_threads(&self) {
+        self.start_connection_thread();
+        self.start_timeout_monitor_thread();
+    }
+
     pub fn start_connection_thread(&self) {
         let sending_queue = self.sending_queue.clone();
         let in_transit = self.in_transit.clone();
@@ -72,19 +83,53 @@ impl Connection {
 
         thread::spawn(move || {
             loop {
-                if let Some(packet) = sending_queue.lock().unwrap().pop_front() {
+                let first_packet = { sending_queue.lock().unwrap().pop_front() };
+
+                if let Some(packet) = first_packet {
+                    sending_queue.lock().unwrap();
+
                     socket.send_to(&*packet.to_bytes(), addr);
+
+                    // Don't bother checking if an ACK packet is still in transit
+                    if packet.is_ack() {
+                        continue;
+                    }
 
                     // We need to keep track of which packets are currently in transit
                     // so we can accept acknowledgements for them later
-                    in_transit
-                        .lock()
-                        .unwrap()
-                        .insert(packet.get_sequence_number(), packet);
+                    in_transit.lock().unwrap().insert(
+                        packet.get_sequence_number(),
+                        TimeoutPacket {
+                            send_time: SystemTime::now(),
+                            packet,
+                        },
+                    );
                 }
-
-                // TODO: Handle ACKs
             }
+        });
+    }
+
+    pub fn start_timeout_monitor_thread(&self) {
+        let sending_queue = self.sending_queue.clone();
+        let in_transit = self.in_transit.clone();
+        let addr = self.addr.clone();
+        let socket = self.socket.try_clone().unwrap();
+
+        thread::spawn(move || loop {
+            {
+                let mut in_transit = in_transit.lock().unwrap();
+                let items = in_transit.drain_filter(|key, val| {
+                    SystemTime::now().duration_since(val.send_time).unwrap()
+                        > RETRANSMISSION_TIMEOUT
+                });
+
+                for item in items.into_iter() {
+                    println!("Packet has timed out: {:?}", item.1.packet);
+                    sending_queue.lock().unwrap().push_back(item.1.packet);
+                }
+            }
+
+            thread::sleep(RETRANSMISSION_TIMEOUT)
         });
     }
 
@@ -171,6 +216,7 @@ impl Connection {
     }
 
     pub fn handle_cookie_ack(&mut self, packet: Packet) {
+        self.handle_ack(&packet);
         self.set_connection_state(ConnectionState::Established);
     }
 

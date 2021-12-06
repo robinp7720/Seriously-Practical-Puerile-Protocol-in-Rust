@@ -54,7 +54,7 @@ impl ConnectionManager {
 
                     let mut connection =
                         Connection::new(src, socket.try_clone().unwrap(), None, None);
-                    connection.start_connection_thread();
+                    connection.start_threads();
                     connection.send_init_ack();
                     connection_queue.push(connection);
 
@@ -69,7 +69,7 @@ impl ConnectionManager {
                         Some(ConnectionCookie::from_bytes(packet.get_payload())),
                     );
 
-                    connection.start_connection_thread();
+                    connection.start_threads();
 
                     connections.lock().unwrap().insert(
                         connection.get_connection_id(),

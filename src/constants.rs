@@ -9,4 +9,4 @@ pub const MAX_PACKET_SIZE: usize = MAX_PAYLOAD_SIZE
     + MAX_SIGNATURE_HEADER_SIZE
     + MAX_ENCRYPTION_HEADER_SIZE;
 pub const MAX_BUFFER_SIZE: usize = 0; // Whats the maximum buffer we can have per connection and advertise.
-pub const RETRANSMISSION_TIMEOUT: u64 = 1000; // Timeout for retransmission in milliseconds
+pub const RETRANSMISSION_TIMEOUT: Duration = Duration::from_secs(1); // Timeout for retransmission in milliseconds
