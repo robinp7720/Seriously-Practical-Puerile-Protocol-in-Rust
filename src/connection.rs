@@ -9,6 +9,7 @@ use std::time::SystemTime;
 
 #[derive(Eq, PartialEq, Copy, Clone)]
 pub enum ConnectionState {
+    Listen,
     CookieWait,
     CookieEchoed,
     Established,
@@ -50,6 +51,14 @@ impl Connection {
             Some(connection_id) => connection_id,
         };
 
+        // The starting state should be cookie wait if we are a client
+        let mut current_state = ConnectionState::CookieWait;
+
+        // and Listen if we are a server
+        if cookie.is_none() {
+            current_state = ConnectionState::Listen;
+        }
+
         Connection {
             addr,
             connection_id,
@@ -57,7 +66,7 @@ impl Connection {
             incoming: Mutex::new(VecDeque::new()),
             sending_queue: Arc::new(Mutex::new(VecDeque::new())),
             in_transit: Arc::new(Mutex::new(HashMap::new())),
-            connection_state: Mutex::new(ConnectionState::CookieWait),
+            connection_state: Mutex::new(current_state),
             cookie,
             current_send_sequence_number: Arc::new(Mutex::new(0)),
         }
@@ -87,7 +96,12 @@ impl Connection {
                     };
 
                     // Don't bother checking if an ACK packet is still in transit
-                    if packet.is_ack() {
+                    if packet.is_ack() && packet.payload_size() == 0 {
+                        continue;
+                    }
+
+                    // We don't care if the cookie ack arrives
+                    if packet.is_cookie() && packet.is_ack() {
                         continue;
                     }
 
@@ -118,8 +132,15 @@ impl Connection {
                 });
 
                 for item in items.into_iter() {
-                    println!("Packet has timed out: {:?}", item.1.packet);
-                    sending_queue.lock().unwrap().push_back(item.1.packet);
+                    let packet = item.1.packet;
+
+                    if packet.is_init() && packet.is_ack() {
+                        println!("The init ack has timed out. This is a problem. Chances are we can't recover");
+                        //continue;
+                    }
+
+                    println!("Packet has timed out: {:?}", packet);
+                    sending_queue.lock().unwrap().push_back(packet);
                 }
             }
 
@@ -142,14 +163,21 @@ impl Connection {
         // These packets should only have the cookie flag set
         // If we receive a cookie-echo, we need to verify it and respond with an ack
         if packet.is_cookie() && !packet.is_ack() {
-            self.handle_cookie_echo(packet);
-
+            if self.get_connection_state() == ConnectionState::Listen {
+                self.handle_cookie_echo(packet);
+            } else {
+                self.send_ack(packet.get_sequence_number());
+            }
             return;
         }
 
         // HANDLE COOKIE-ACK packets
         // These packets have both the cookie and ack flags set
-        if packet.is_cookie() && packet.is_ack() {
+        if packet.is_cookie()
+            && packet.is_ack()
+            && self.get_connection_state() == ConnectionState::CookieEchoed
+        {
+            //self.send_ack(packet.get_sequence_number());
             self.handle_cookie_ack(packet);
 
             return;
@@ -208,6 +236,10 @@ impl Connection {
             //       Send a reset?
             return;
         }
+
+        // Remove the init-ack from the in-transit queue.
+        // If we are handling a cookie-echo, it means it has arrived
+        self.in_transit.lock().unwrap().remove(&(0 as u32));
 
         self.set_connection_state(ConnectionState::Established);
 
@@ -353,9 +385,9 @@ impl Connection {
             cookie.to_bytes(),
         );
 
-        self.send_packet(packet);
+        self.set_connection_state(ConnectionState::CookieEchoed);
 
-        self.set_connection_state(ConnectionState::CookieEchoed)
+        self.send_packet(packet);
     }
 
     pub fn send_cookie_ack(&self) {
