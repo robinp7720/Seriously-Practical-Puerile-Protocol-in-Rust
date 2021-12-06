@@ -181,4 +181,8 @@ impl Packet {
     pub fn is_ack(&self) -> bool {
         self.header.flags.ack
     }
+
+    pub fn is_cookie(&self) -> bool {
+        self.header.flags.cookie
+    }
 }

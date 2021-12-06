@@ -2,6 +2,7 @@ mod connection;
 mod connection_interface;
 mod connection_manager;
 mod constants;
+mod cookie;
 mod packet;
 
 use connection::Connection;
@@ -65,6 +66,8 @@ impl SPPPSocket {
 
     pub fn connect<A: ToSocketAddrs>(&self, addr: A) -> Result<SPPPConnection, Error> {
         let connection = self.connection_manager.connect(addr)?;
+
+        connection.lock().unwrap().send_cookie_echo();
 
         Ok(SPPPConnection { connection })
     }

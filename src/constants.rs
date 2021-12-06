@@ -1,1 +1,12 @@
-pub const MAX_PACKET_SIZE: usize = 1200;
+pub const MAX_PAYLOAD_SIZE: usize = 1200;
+pub const MAX_PRIMARY_HEADER_SIZE: usize = 128;
+pub const MAX_CHANGE_KEY_HEADER_SIZE: usize = 64;
+pub const MAX_SIGNATURE_HEADER_SIZE: usize = 64;
+pub const MAX_ENCRYPTION_HEADER_SIZE: usize = 128 + 32;
+pub const MAX_PACKET_SIZE: usize = MAX_PAYLOAD_SIZE
+    + MAX_PRIMARY_HEADER_SIZE
+    + MAX_CHANGE_KEY_HEADER_SIZE
+    + MAX_SIGNATURE_HEADER_SIZE
+    + MAX_ENCRYPTION_HEADER_SIZE;
+pub const MAX_BUFFER_SIZE: usize = 0; // Whats the maximum buffer we can have per connection and advertise.
+pub const RETRANSMISSION_TIMEOUT: u64 = 1000; // Timeout for retransmission in milliseconds

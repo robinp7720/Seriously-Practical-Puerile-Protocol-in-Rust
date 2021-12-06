@@ -1,6 +1,7 @@
 use crate::connection::Connection;
 use crate::connection_interface::ConnectionInterface;
 use crate::constants::MAX_PACKET_SIZE;
+use crate::cookie::ConnectionCookie;
 use crate::packet::{Packet, PacketFlags, PrimaryHeader};
 use std::collections::HashMap;
 use std::io::{Error, ErrorKind};
@@ -46,7 +47,8 @@ impl ConnectionManager {
                     // Insert this packet into the new connection queue
                     let mut connection_queue = connection_queue.lock().unwrap();
 
-                    let connection = Connection::new(src, socket.try_clone().unwrap(), None);
+                    let mut connection =
+                        Connection::new(src, socket.try_clone().unwrap(), None, None);
                     connection.send_init_ack();
                     connection_queue.push(connection);
 
@@ -58,6 +60,7 @@ impl ConnectionManager {
                         src,
                         socket.try_clone().unwrap(),
                         Some(packet.get_connection_id()),
+                        Some(ConnectionCookie::from_bytes(packet.get_payload())),
                     );
 
                     connections.lock().unwrap().insert(
