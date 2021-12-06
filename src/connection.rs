@@ -63,9 +63,19 @@ impl Connection {
     }
 
     pub fn receive_packet(&mut self, packet: Packet) {
+        // Handle COOKIE-ECHO packets
+        // These packets should only have the cookie flag set
         // If we receive a cookie-echo, we need to verify it and respond with an ack
         if packet.is_cookie() && !packet.is_ack() {
             self.handle_cookie_echo(packet);
+
+            return;
+        }
+
+        // HANDLE COOKIE-ACK packets
+        // These packets have both the cookie and ack flags set
+        if packet.is_cookie() && packet.is_ack() {
+            self.handle_cookie_ack(packet);
 
             return;
         }
@@ -95,7 +105,9 @@ impl Connection {
         self.send_cookie_ack();
     }
 
-    pub fn canRecv(&self) -> bool {
+    pub fn handle_cookie_ack(&self, packet: Packet) {}
+
+    pub fn can_recv(&self) -> bool {
         let incoming = self.incoming.lock().unwrap();
 
         //println!("{}, {}", incoming.len(), incoming.is_empty());

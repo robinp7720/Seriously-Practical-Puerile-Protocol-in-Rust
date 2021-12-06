@@ -23,13 +23,13 @@ impl SPPPConnection {
     }
 
     pub fn recv(&mut self) -> Result<Vec<u8>, Error> {
-        while (!self.canRecv()) {}
+        while (!self.can_recv()) {}
 
         Ok(self.connection.lock().unwrap().recv())
     }
 
-    pub fn canRecv(&self) -> bool {
-        self.connection.lock().unwrap().canRecv()
+    pub fn can_recv(&self) -> bool {
+        self.connection.lock().unwrap().can_recv()
     }
 }
 
