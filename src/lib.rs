@@ -81,8 +81,11 @@ impl SPPPSocket {
     pub fn connect<A: ToSocketAddrs>(&self, addr: A) -> Result<SPPPConnection, Error> {
         let connection = self.connection_manager.connect(addr)?;
 
-        connection.lock().unwrap().send_cookie_echo();
+        {
+            connection.lock().unwrap().send_cookie_echo();
+        }
 
+        println!("Waiting for connection to be established");
         while connection.lock().unwrap().get_connection_state() != ConnectionState::Established {}
 
         Ok(SPPPConnection { connection })

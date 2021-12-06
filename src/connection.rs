@@ -32,6 +32,7 @@ pub struct Connection {
     connection_state: Mutex<ConnectionState>,
     cookie: Option<ConnectionCookie>,
     current_send_sequence_number: Arc<Mutex<u32>>,
+    proccessing_retransmit: Arc<Mutex<bool>>,
 }
 
 struct TimeoutPacket {
@@ -69,6 +70,7 @@ impl Connection {
             connection_state: Mutex::new(current_state),
             cookie,
             current_send_sequence_number: Arc::new(Mutex::new(0)),
+            proccessing_retransmit: Arc::new(Mutex::new(false)),
         }
     }
 
@@ -122,9 +124,14 @@ impl Connection {
     pub fn start_timeout_monitor_thread(&self) {
         let sending_queue = self.sending_queue.clone();
         let in_transit = self.in_transit.clone();
+        let proccessing_retransmit = self.proccessing_retransmit.clone();
 
         thread::spawn(move || loop {
             {
+                {
+                    *proccessing_retransmit.lock().unwrap() = true;
+                }
+
                 let mut in_transit = in_transit.lock().unwrap();
                 let items = in_transit.drain_filter(|_key, val| {
                     SystemTime::now().duration_since(val.send_time).unwrap()
@@ -141,6 +148,10 @@ impl Connection {
 
                     println!("Packet has timed out: {:?}", packet);
                     sending_queue.lock().unwrap().push_back(packet);
+                }
+
+                {
+                    *proccessing_retransmit.lock().unwrap() = false;
                 }
             }
 
@@ -163,21 +174,13 @@ impl Connection {
         // These packets should only have the cookie flag set
         // If we receive a cookie-echo, we need to verify it and respond with an ack
         if packet.is_cookie() && !packet.is_ack() {
-            if self.get_connection_state() == ConnectionState::Listen {
-                self.handle_cookie_echo(packet);
-            } else {
-                self.send_ack(packet.get_sequence_number());
-            }
+            self.handle_cookie_echo(packet);
             return;
         }
 
         // HANDLE COOKIE-ACK packets
         // These packets have both the cookie and ack flags set
-        if packet.is_cookie()
-            && packet.is_ack()
-            && self.get_connection_state() == ConnectionState::CookieEchoed
-        {
-            //self.send_ack(packet.get_sequence_number());
+        if packet.is_cookie() && packet.is_ack() {
             self.handle_cookie_ack(packet);
 
             return;
@@ -442,8 +445,9 @@ impl Connection {
     pub fn connection_can_close(&self) -> bool {
         let in_transit_count = self.in_transit.lock().unwrap().len();
         let to_send_count = self.sending_queue.lock().unwrap().len();
+        let is_processing_retransmit = *self.proccessing_retransmit.lock().unwrap();
 
-        in_transit_count == 0 && to_send_count == 0
+        in_transit_count == 0 && to_send_count == 0 && !is_processing_retransmit
     }
 
     pub fn wait_for_last_ack(&self) {
