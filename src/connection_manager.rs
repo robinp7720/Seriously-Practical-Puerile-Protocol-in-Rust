@@ -26,11 +26,17 @@ impl ConnectionManager {
     }
 
     pub fn start(&self) {
+        self.start_recv_thread();
+
+    }
+
+    fn start_recv_thread(&self) {
         let socket = self.socket.try_clone().unwrap();
 
         let connection_queue = Arc::clone(&self.connection_queue);
         let connections = Arc::clone(&self.connections);
 
+        // Listening thread
         thread::spawn(move || loop {
             let mut buf = [0; MAX_PACKET_SIZE];
 
@@ -48,6 +54,7 @@ impl ConnectionManager {
 
                     let mut connection =
                         Connection::new(src, socket.try_clone().unwrap(), None, None);
+                    connection.start_connection_thread();
                     connection.send_init_ack();
                     connection_queue.push(connection);
 
@@ -61,6 +68,8 @@ impl ConnectionManager {
                         Some(packet.get_connection_id()),
                         Some(ConnectionCookie::from_bytes(packet.get_payload())),
                     );
+
+                    connection.start_connection_thread();
 
                     connections.lock().unwrap().insert(
                         connection.get_connection_id(),

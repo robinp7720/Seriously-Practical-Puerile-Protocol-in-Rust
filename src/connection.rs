@@ -1,10 +1,14 @@
+use std::collections::VecDeque;
 use crate::connection::ConnectionState::CookieWait;
 use crate::constants::MAX_PAYLOAD_SIZE;
 use crate::cookie::ConnectionCookie;
 use crate::packet::{Packet, PacketFlags, PrimaryHeader};
 use std::net::{SocketAddr, UdpSocket};
 use std::sync::mpsc::{Receiver, Sender};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
+use std::sync::TryLockError::Poisoned;
+use std::thread;
+use rand::thread_rng;
 
 enum ConnectionState {
     CookieWait,
@@ -23,8 +27,8 @@ pub struct Connection {
     addr: SocketAddr,
     connection_id: u32,
     socket: UdpSocket,
-    incoming: Mutex<Vec<Packet>>,
-    sending_queue: Mutex<Vec<Vec<u8>>>,
+    incoming: Mutex<VecDeque<Packet>>,
+    sending_queue: Arc<Mutex<VecDeque<Packet>>>,
     connection_state: ConnectionState,
     cookie: Option<ConnectionCookie>,
 }
@@ -45,11 +49,27 @@ impl Connection {
             addr,
             connection_id,
             socket,
-            incoming: Mutex::new(vec![]),
-            sending_queue: Mutex::new(vec![]),
+            incoming: Mutex::new(VecDeque::new()),
+            sending_queue: Arc::new(Mutex::new(VecDeque::new())),
             connection_state: ConnectionState::CookieWait,
             cookie,
         }
+    }
+
+    pub fn start_connection_thread(&self) {
+        let sending_queue = self.sending_queue.clone();
+        let addr = self.addr.clone();
+        let socket = self.socket.try_clone().unwrap();
+
+        thread::spawn(move || {
+            loop {
+                if let Some(packet) = sending_queue.lock().unwrap().pop_front() {
+                    socket.send_to(&*packet.to_bytes(), addr);
+                }
+
+                // TODO: Handle ACKs
+            }
+        });
     }
 
     pub fn verify_cookie(&self, cookie: &ConnectionCookie) -> bool {
@@ -82,7 +102,7 @@ impl Connection {
 
         let mut incoming = self.incoming.lock().unwrap();
 
-        incoming.push(packet);
+        incoming.push_back(packet);
     }
 
     pub fn handle_cookie_echo(&mut self, packet: Packet) {
@@ -105,7 +125,9 @@ impl Connection {
         self.send_cookie_ack();
     }
 
-    pub fn handle_cookie_ack(&self, packet: Packet) {}
+    pub fn handle_cookie_ack(&mut self, packet: Packet) {
+        self.connection_state = ConnectionState::Established;
+    }
 
     pub fn can_recv(&self) -> bool {
         let incoming = self.incoming.lock().unwrap();
@@ -141,25 +163,19 @@ impl Connection {
 
         for chunk in chunks {
             println!("Sending to send queue: {:?}", chunk);
-            self.sending_queue.lock().unwrap().push(Vec::from(chunk))
+            self.sending_queue.lock().unwrap().push_back(self.create_packet_for_data(Vec::from(chunk)))
         }
     }
 
-    pub fn process_send_queue() {
-        // Get the first element of the send queue and send it to the client
-    }
-
-    pub fn create_packet_send_data(&self, payload: Vec<u8>) {
+    pub fn create_packet_for_data(&self, payload: Vec<u8>) -> Packet {
         let mut flags = PacketFlags::new(0);
 
-        let packet = Packet::new(
+        Packet::new(
             PrimaryHeader::new(self.connection_id, 0, 0, 0, flags),
             None,
             None,
             payload,
-        );
-
-        self.send_packet(packet);
+        )
     }
 
     pub fn send_init_ack(&mut self) {
