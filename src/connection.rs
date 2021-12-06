@@ -3,11 +3,25 @@ use std::net::{SocketAddr, UdpSocket};
 use std::sync::mpsc::{Receiver, Sender};
 use std::sync::Mutex;
 
+enum ConnectionState {
+    CookieWait,
+    CookieEchoed,
+    Established,
+    FinWait1,
+    FinWait2,
+    TimeWait,
+    CloseWait,
+    LastAck,
+    Closed,
+    Closing,
+}
+
 pub struct Connection {
     addr: SocketAddr,
     connection_id: u32,
     socket: UdpSocket,
     incoming: Mutex<Vec<Packet>>,
+    connection_state: ConnectionState,
 }
 
 impl Connection {
@@ -22,13 +36,12 @@ impl Connection {
             connection_id,
             socket,
             incoming: Mutex::new(vec![]),
+            connection_state: ConnectionState::CookieWait,
         }
     }
 
     pub fn receive_packet(&mut self, packet: Packet) {
         let mut incoming = self.incoming.lock().unwrap();
-
-        println!("we have recevied a data packet! {:?}", packet.get_payload());
 
         incoming.push(packet);
     }
@@ -55,7 +68,6 @@ impl Connection {
     }
 
     fn send_packet(&self, packet: Packet) {
-        println!("sending packet to: {}", self.addr);
         self.socket.send_to(&*packet.to_bytes(), self.addr);
     }
 
