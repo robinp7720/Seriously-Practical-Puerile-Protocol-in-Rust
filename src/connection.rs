@@ -2,6 +2,7 @@ use crate::connection::ConnectionState::CookieWait;
 use crate::constants::{MAX_PAYLOAD_SIZE, RETRANSMISSION_TIMEOUT};
 use crate::cookie::ConnectionCookie;
 use crate::packet::{Packet, PacketFlags, PrimaryHeader};
+use crate::ConnectionState::FinWait2;
 use rand::thread_rng;
 use std::collections::{HashMap, VecDeque};
 use std::net::{SocketAddr, UdpSocket};
@@ -161,6 +162,12 @@ impl Connection {
             return;
         }
 
+        if packet.is_fin() {
+            self.handle_fin(packet);
+
+            return;
+        }
+
         // HANDLE DATA ACK packets
         if packet.is_ack() {
             self.handle_ack(&packet);
@@ -168,9 +175,8 @@ impl Connection {
 
         if packet.payload_size() > 0 {
             self.send_ack(packet.get_sequence_number());
+            self.insert_packet_incoming_queue(packet);
         }
-
-        self.insert_packet_incoming_queue(packet);
     }
 
     pub fn insert_packet_incoming_queue(&self, packet: Packet) {
@@ -218,6 +224,24 @@ impl Connection {
     pub fn handle_cookie_ack(&mut self, packet: Packet) {
         self.handle_ack(&packet);
         self.set_connection_state(ConnectionState::Established);
+    }
+
+    pub fn handle_fin(&mut self, packet: Packet) {
+        self.send_ack(packet.get_sequence_number());
+
+        if self.get_connection_state() == ConnectionState::Established {
+            self.set_connection_state(ConnectionState::CloseWait);
+
+            return;
+        }
+
+        if self.get_connection_state() == ConnectionState::FinWait2 {
+            self.set_connection_state(ConnectionState::TimeWait);
+
+            return;
+        }
+
+        panic!("Invalid state when received fin");
     }
 
     pub fn handle_ack(&mut self, packet: &Packet) {
@@ -352,6 +376,28 @@ impl Connection {
         );
 
         self.send_packet(packet);
+    }
+
+    pub fn send_fin(&self) {
+        let mut flags = PacketFlags::new(0);
+        flags.fin = true;
+
+        let packet = Packet::new(
+            PrimaryHeader::new(self.connection_id, 0, 0, 0, flags),
+            None,
+            None,
+            vec![],
+        );
+
+        self.send_packet(packet);
+
+        if self.get_connection_state() == ConnectionState::CloseWait {
+            self.set_connection_state(ConnectionState::LastAck)
+        }
+
+        if self.get_connection_state() == ConnectionState::Established {
+            self.set_connection_state(ConnectionState::FinWait1)
+        }
     }
 
     pub fn get_addr(&self) -> SocketAddr {

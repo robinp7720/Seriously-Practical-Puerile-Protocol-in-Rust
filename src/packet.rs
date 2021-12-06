@@ -201,4 +201,8 @@ impl Packet {
     pub fn is_cookie(&self) -> bool {
         self.header.flags.cookie
     }
+
+    pub fn is_fin(&self) -> bool {
+        self.header.flags.fin
+    }
 }
