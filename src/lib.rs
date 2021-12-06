@@ -31,6 +31,16 @@ impl SPPPConnection {
     pub fn can_recv(&self) -> bool {
         self.connection.lock().unwrap().can_recv()
     }
+
+    pub fn wait_for_no_sending(&self) {
+        while !self.connection.lock().unwrap().connection_can_close() {}
+    }
+}
+
+impl Drop for SPPPConnection {
+    fn drop(&mut self) {
+        self.wait_for_no_sending();
+    }
 }
 
 pub struct SPPPSocket {

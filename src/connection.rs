@@ -317,6 +317,17 @@ impl Connection {
     }
 
     pub fn receive(&self, packet: Packet) {}
+
+    pub fn connection_can_close(&self) -> bool {
+        let in_transit_count = self.in_transit.lock().unwrap().len();
+        let to_send_count = self.sending_queue.lock().unwrap().len();
+
+        in_transit_count == 0 && to_send_count == 0
+    }
+
+    pub fn wait_for_last_ack(&self) {
+        while !self.connection_can_close() {}
+    }
 }
 
 #[cfg(test)]
