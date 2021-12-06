@@ -41,7 +41,7 @@ impl PrimaryHeader {
         let ack_number: u32 = u32::from_be_bytes([bytes[8], bytes[9], bytes[10], bytes[11]]);
         let arwnd: u16 = u16::from_be_bytes([bytes[12], bytes[13]]);
         let flags = PacketFlags::new(bytes[14]);
-        let next_header: u8 = bytes[15];
+        let _next_header: u8 = bytes[15];
 
         PrimaryHeader::new(connection_id, seq_number, ack_number, arwnd, flags)
     }

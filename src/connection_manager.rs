@@ -3,11 +3,10 @@ use crate::constants::MAX_PACKET_SIZE;
 use crate::cookie::ConnectionCookie;
 use crate::packet::{Packet, PacketFlags, PrimaryHeader};
 use std::collections::HashMap;
-use std::io::{Error, ErrorKind};
-use std::net::{SocketAddr, ToSocketAddrs, UdpSocket};
-use std::sync::mpsc::{Receiver, Sender};
+use std::io::Error;
+use std::net::{ToSocketAddrs, UdpSocket};
+use std::sync::Arc;
 use std::sync::Mutex;
-use std::sync::{mpsc, Arc};
 use std::thread;
 
 pub struct ConnectionManager {
@@ -113,7 +112,7 @@ impl ConnectionManager {
 
         loop {
             match connection_queue.lock().unwrap().pop() {
-                Some(mut connection_id) => {
+                Some(connection_id) => {
                     let mut connections = self.connections.lock().unwrap();
 
                     let connection = connections.get_mut(&connection_id).unwrap();
@@ -135,7 +134,7 @@ impl ConnectionManager {
         let packet = Packet::new(PrimaryHeader::new(0, 0, 0, 0, flags), None, None, vec![]);
 
         let payload = packet.to_bytes();
-        &self.socket.send_to(&*payload, addr);
+        self.socket.send_to(&*payload, addr)?;
 
         // Wait for a response
         loop {

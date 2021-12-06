@@ -1,17 +1,11 @@
-use crate::connection::ConnectionState::CookieWait;
 use crate::constants::{MAX_PAYLOAD_SIZE, RETRANSMISSION_TIMEOUT};
 use crate::cookie::ConnectionCookie;
 use crate::packet::{Packet, PacketFlags, PrimaryHeader};
-use crate::ConnectionState::FinWait2;
-use rand::thread_rng;
 use std::collections::{HashMap, VecDeque};
 use std::net::{SocketAddr, UdpSocket};
-use std::sync::mpsc::{Receiver, Sender};
-use std::sync::TryLockError::Poisoned;
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::thread::current;
-use std::time::{Duration, SystemTime};
+use std::time::SystemTime;
 
 #[derive(Eq, PartialEq, Copy, Clone)]
 pub enum ConnectionState {
@@ -37,7 +31,6 @@ pub struct Connection {
     connection_state: Mutex<ConnectionState>,
     cookie: Option<ConnectionCookie>,
     current_send_sequence_number: Arc<Mutex<u32>>,
-    next_expected_ack_number: Arc<Mutex<u32>>,
 }
 
 struct TimeoutPacket {
@@ -67,7 +60,6 @@ impl Connection {
             connection_state: Mutex::new(ConnectionState::CookieWait),
             cookie,
             current_send_sequence_number: Arc::new(Mutex::new(0)),
-            next_expected_ack_number: Arc::new(Mutex::new(0)),
         }
     }
 
@@ -87,9 +79,12 @@ impl Connection {
                 let first_packet = { sending_queue.lock().unwrap().pop_front() };
 
                 if let Some(packet) = first_packet {
-                    sending_queue.lock().unwrap();
-
-                    socket.send_to(&*packet.to_bytes(), addr);
+                    match socket.send_to(&*packet.to_bytes(), addr) {
+                        Ok(_) => {}
+                        Err(_) => {
+                            println!("We failed to send a packet!?")
+                        }
+                    };
 
                     // Don't bother checking if an ACK packet is still in transit
                     if packet.is_ack() {
@@ -113,13 +108,11 @@ impl Connection {
     pub fn start_timeout_monitor_thread(&self) {
         let sending_queue = self.sending_queue.clone();
         let in_transit = self.in_transit.clone();
-        let addr = self.addr.clone();
-        let socket = self.socket.try_clone().unwrap();
 
         thread::spawn(move || loop {
             {
                 let mut in_transit = in_transit.lock().unwrap();
-                let items = in_transit.drain_filter(|key, val| {
+                let items = in_transit.drain_filter(|_key, val| {
                     SystemTime::now().duration_since(val.send_time).unwrap()
                         > RETRANSMISSION_TIMEOUT
                 });
@@ -315,7 +308,7 @@ impl Connection {
     }
 
     pub fn create_packet_for_data(&self, payload: Vec<u8>) -> Packet {
-        let mut flags = PacketFlags::new(0);
+        let flags = PacketFlags::new(0);
 
         Packet::new(
             PrimaryHeader::new(self.connection_id, 0, 0, 0, flags),
@@ -407,8 +400,6 @@ impl Connection {
     pub fn get_connection_id(&self) -> u32 {
         self.connection_id
     }
-
-    pub fn receive(&self, packet: Packet) {}
 
     pub fn connection_can_close(&self) -> bool {
         let in_transit_count = self.in_transit.lock().unwrap().len();

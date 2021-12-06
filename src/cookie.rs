@@ -29,7 +29,7 @@ impl ConnectionCookie {
         let timestamp: [u8; 16] = self.timestamp.to_be_bytes();
         let ip = match self.source_addr.ip() {
             IpAddr::V4(addr) => addr.octets(),
-            IpAddr::V6(addr) => {
+            IpAddr::V6(_addr) => {
                 //TODO: Add IPv6 support to cookie
                 //      Is it even possible? We don't know the length of the IP field in the cookie
                 panic!("We don't support IPv6")

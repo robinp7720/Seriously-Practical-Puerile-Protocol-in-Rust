@@ -11,7 +11,7 @@ use connection::Connection;
 use crate::connection::ConnectionState;
 use crate::connection_manager::ConnectionManager;
 use std::io::Error;
-use std::net::{SocketAddr, ToSocketAddrs, UdpSocket};
+use std::net::{ToSocketAddrs, UdpSocket};
 use std::sync::{Arc, Mutex};
 
 pub struct SPPPConnection {
@@ -25,7 +25,7 @@ impl SPPPConnection {
     }
 
     pub fn recv(&mut self) -> Result<Vec<u8>, Error> {
-        while (!self.can_recv()) {}
+        while !self.can_recv() {}
 
         Ok(self.connection.lock().unwrap().recv())
     }
