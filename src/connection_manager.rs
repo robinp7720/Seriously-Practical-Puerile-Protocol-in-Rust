@@ -12,7 +12,7 @@ use std::thread;
 
 pub struct ConnectionManager {
     connections: Arc<Mutex<HashMap<u32, Arc<Mutex<Connection>>>>>,
-    connection_queue: Arc<Mutex<Vec<Connection>>>,
+    connection_queue: Arc<Mutex<Vec<u32>>>,
     socket: UdpSocket,
 }
 
@@ -44,6 +44,8 @@ impl ConnectionManager {
 
                 let packet = Packet::from_bytes(&buf[..amt]);
 
+                // CLIENT SENDING A CONNECTION REQUEST TO SERVER
+                // Here we create the connection object for the server
                 // If the connection id is 0, it means that we are receiving a new connection
                 // request.
                 // Therefore, we need to add the new connection request to the connection queue.
@@ -55,11 +57,21 @@ impl ConnectionManager {
                         Connection::new(src, socket.try_clone().unwrap(), None, None);
                     connection.start_threads();
                     connection.send_init_ack();
-                    connection_queue.push(connection);
+
+                    let connection_id = connection.get_connection_id();
+
+                    connections.lock().unwrap().insert(
+                        connection.get_connection_id(),
+                        Arc::new(Mutex::new(connection)),
+                    );
+
+                    connection_queue.push(connection_id);
 
                     continue;
                 }
 
+                // SERVER SENDING CONNECTION ACKNOWLEDGEMENT to CLIENT
+                // Here we create the connection object on the client
                 if packet.is_init() && packet.is_ack() {
                     let connection = Connection::new(
                         src,
@@ -74,8 +86,6 @@ impl ConnectionManager {
                         connection.get_connection_id(),
                         Arc::new(Mutex::new(connection)),
                     );
-
-                    println!("{:?}", connections.lock().unwrap().keys());
 
                     continue;
                 }
@@ -103,14 +113,7 @@ impl ConnectionManager {
 
         loop {
             match connection_queue.lock().unwrap().pop() {
-                Some(mut connection) => {
-                    let connection_id = connection.get_connection_id();
-
-                    self.connections.lock().unwrap().insert(
-                        connection.get_connection_id(),
-                        Arc::new(Mutex::new(connection)),
-                    );
-
+                Some(mut connection_id) => {
                     let mut connections = self.connections.lock().unwrap();
 
                     let connection = connections.get_mut(&connection_id).unwrap();
