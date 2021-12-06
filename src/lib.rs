@@ -1,5 +1,4 @@
 mod connection;
-mod connection_interface;
 mod connection_manager;
 mod constants;
 mod cookie;

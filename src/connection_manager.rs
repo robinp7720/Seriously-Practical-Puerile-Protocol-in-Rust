@@ -1,5 +1,4 @@
 use crate::connection::Connection;
-use crate::connection_interface::ConnectionInterface;
 use crate::constants::MAX_PACKET_SIZE;
 use crate::cookie::ConnectionCookie;
 use crate::packet::{Packet, PacketFlags, PrimaryHeader};
