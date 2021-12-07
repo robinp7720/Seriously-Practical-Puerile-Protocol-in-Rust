@@ -33,6 +33,7 @@ pub struct Connection {
     cookie: Option<ConnectionCookie>,
     current_send_sequence_number: Arc<Mutex<u32>>,
     proccessing_retransmit: Arc<Mutex<bool>>,
+    processing_sending: Arc<Mutex<bool>>,
 }
 
 struct TimeoutPacket {
@@ -71,6 +72,7 @@ impl Connection {
             cookie,
             current_send_sequence_number: Arc::new(Mutex::new(0)),
             proccessing_retransmit: Arc::new(Mutex::new(false)),
+            processing_sending: Arc::new(Mutex::new(false)),
         }
     }
 
@@ -84,9 +86,14 @@ impl Connection {
         let in_transit = self.in_transit.clone();
         let addr = self.addr.clone();
         let socket = self.socket.try_clone().unwrap();
+        let processing_sending = self.processing_sending.clone();
 
         thread::spawn(move || {
             loop {
+                {
+                    *processing_sending.lock().unwrap() = true;
+                }
+
                 let first_packet = { sending_queue.lock().unwrap().pop_front() };
 
                 if let Some(packet) = first_packet {
@@ -117,6 +124,10 @@ impl Connection {
                         },
                     );
                 }
+
+                {
+                    *processing_sending.lock().unwrap() = false;
+                }
             }
         });
     }
@@ -133,6 +144,7 @@ impl Connection {
                 }
 
                 let mut in_transit = in_transit.lock().unwrap();
+
                 let items = in_transit.drain_filter(|_key, val| {
                     SystemTime::now().duration_since(val.send_time).unwrap()
                         > RETRANSMISSION_TIMEOUT
@@ -155,7 +167,7 @@ impl Connection {
                 }
             }
 
-            thread::sleep(RETRANSMISSION_TIMEOUT)
+            thread::sleep(RETRANSMISSION_TIMEOUT / 10)
         });
     }
 
@@ -170,6 +182,12 @@ impl Connection {
     }
 
     pub fn receive_packet(&mut self, packet: Packet) {
+        println!(
+            "Received packet {}, {:?}",
+            packet.get_sequence_number(),
+            packet
+        );
+
         // Handle COOKIE-ECHO packets
         // These packets should only have the cookie flag set
         // If we receive a cookie-echo, we need to verify it and respond with an ack
@@ -198,8 +216,14 @@ impl Connection {
         }
 
         if packet.payload_size() > 0 {
+            println!("Sending ack for {}", packet.get_sequence_number());
             self.send_ack(packet.get_sequence_number());
             self.insert_packet_incoming_queue(packet);
+        } else {
+            println!(
+                "Payload size of {} is 0. Not sending ack",
+                packet.get_sequence_number()
+            );
         }
     }
 
@@ -250,7 +274,9 @@ impl Connection {
     }
 
     pub fn handle_cookie_ack(&mut self, packet: Packet) {
+        println!("Handling cookie ack");
         self.handle_ack(&packet);
+        println!("Setting connection state to established");
         self.set_connection_state(ConnectionState::Established);
     }
 
@@ -277,10 +303,28 @@ impl Connection {
             self.set_connection_state(ConnectionState::FinWait2)
         }
 
-        self.in_transit
+        println!(
+            "Removing packet {} from transit map",
+            &packet.get_ack_number()
+        );
+
+        match self
+            .in_transit
             .lock()
             .unwrap()
-            .remove(&packet.get_ack_number());
+            .remove(&packet.get_ack_number())
+        {
+            None => {
+                println!("We couldn't remove that packet from the transit map. It doesn't exist!")
+            }
+            Some(_) => {}
+        };
+
+        println!("Remaining elements:",);
+        for key in self.in_transit.lock().unwrap().keys() {
+            println!("{}", key);
+        }
+        println!("--------");
     }
 
     pub fn can_recv(&self) -> bool {
@@ -306,9 +350,11 @@ impl Connection {
 
     fn send_packet(&self, mut packet: Packet) {
         let mut seq_num = self.current_send_sequence_number.lock().unwrap();
-
         // Set the sequence number for the packet
         packet.set_sequence_number(*seq_num);
+
+        println!("Sending packet {}: {:?}", *seq_num, packet);
+
         *seq_num += packet.payload_size();
 
         self.sending_queue.lock().unwrap().push_back(packet);
@@ -376,6 +422,7 @@ impl Connection {
     }
 
     pub fn send_cookie_echo(&mut self) {
+        println!("Sending cookie echo");
         let cookie = self.cookie.as_ref().unwrap();
 
         let mut flags = PacketFlags::new(0);
@@ -446,8 +493,12 @@ impl Connection {
         let in_transit_count = self.in_transit.lock().unwrap().len();
         let to_send_count = self.sending_queue.lock().unwrap().len();
         let is_processing_retransmit = *self.proccessing_retransmit.lock().unwrap();
+        let is_processing_sending = *self.processing_sending.lock().unwrap();
 
-        in_transit_count == 0 && to_send_count == 0 && !is_processing_retransmit
+        in_transit_count == 0
+            && to_send_count == 0
+            && !is_processing_retransmit
+            && !is_processing_sending
     }
 
     pub fn wait_for_last_ack(&self) {
