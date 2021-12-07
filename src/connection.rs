@@ -32,6 +32,7 @@ pub struct Connection {
     connection_state: Mutex<ConnectionState>,
     cookie: Option<ConnectionCookie>,
     current_send_sequence_number: Arc<Mutex<u32>>,
+    next_expected_sequence_number: Arc<Mutex<u32>>,
     proccessing_retransmit: Arc<Mutex<bool>>,
     processing_sending: Arc<Mutex<bool>>,
 }
@@ -71,6 +72,7 @@ impl Connection {
             connection_state: Mutex::new(current_state),
             cookie,
             current_send_sequence_number: Arc::new(Mutex::new(0)),
+            next_expected_sequence_number: Arc::new(Mutex::new(0)),
             proccessing_retransmit: Arc::new(Mutex::new(false)),
             processing_sending: Arc::new(Mutex::new(false)),
         }
@@ -182,11 +184,19 @@ impl Connection {
     }
 
     pub fn receive_packet(&mut self, packet: Packet) {
+        let expected_sequence_number = { *self.next_expected_sequence_number.lock().unwrap() };
+
         println!(
-            "Received packet {}, {:?}",
+            "Received packet {}. Expected {}, {:?}",
             packet.get_sequence_number(),
+            expected_sequence_number,
             packet
         );
+
+        if packet.get_sequence_number() == expected_sequence_number {
+            *self.next_expected_sequence_number.lock().unwrap() =
+                packet.get_sequence_number() + packet.payload_size();
+        }
 
         // Handle COOKIE-ECHO packets
         // These packets should only have the cookie flag set
