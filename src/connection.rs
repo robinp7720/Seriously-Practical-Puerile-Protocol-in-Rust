@@ -185,6 +185,7 @@ impl Connection {
 
     pub fn receive_packet(&mut self, packet: Packet) {
         let expected_sequence_number = { *self.next_expected_sequence_number.lock().unwrap() };
+        let mut packet_expected = true;
 
         println!(
             "Received packet {}. Expected {}, {:?}",
@@ -192,6 +193,10 @@ impl Connection {
             expected_sequence_number,
             packet
         );
+
+        if (packet.get_sequence_number() < expected_sequence_number) {
+            packet_expected = false;
+        }
 
         if packet.get_sequence_number() == expected_sequence_number {
             *self.next_expected_sequence_number.lock().unwrap() =
@@ -228,7 +233,10 @@ impl Connection {
         if packet.payload_size() > 0 {
             println!("Sending ack for {}", packet.get_sequence_number());
             self.send_ack(packet.get_sequence_number());
-            self.insert_packet_incoming_queue(packet);
+
+            if packet_expected {
+                self.insert_packet_incoming_queue(packet);
+            }
         } else {
             println!(
                 "Payload size of {} is 0. Not sending ack",
