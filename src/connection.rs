@@ -167,13 +167,10 @@ impl Connection {
                 let current_timeout_packet = transit_queue_rx.recv().unwrap();
 
                 if !current_timeout_packet.timed_out() {
-                    thread::sleep(
-                        SystemTime::now()
-                            .duration_since(
-                                current_timeout_packet.send_time + RETRANSMISSION_TIMEOUT,
-                            )
-                            .unwrap(),
-                    )
+                    let deadline = current_timeout_packet.send_time + RETRANSMISSION_TIMEOUT;
+                    let time_to_wait = deadline.duration_since(SystemTime::now()).unwrap();
+
+                    thread::sleep(time_to_wait)
                 }
 
                 {
