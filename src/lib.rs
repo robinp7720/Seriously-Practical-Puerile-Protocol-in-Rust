@@ -20,7 +20,7 @@ pub struct SPPPConnection {
 
 impl SPPPConnection {
     pub fn send(&self, payload: Vec<u8>) {
-        let connection = self.connection.lock().unwrap();
+        let mut connection = self.connection.lock().unwrap();
         connection.send_data(payload);
     }
 
@@ -35,13 +35,15 @@ impl SPPPConnection {
     }
 
     pub fn wait_for_no_sending(&self) {
-        while !self.connection.lock().unwrap().connection_can_close() {
-            println!("Waiting");
-        }
+        while !self.connection.lock().unwrap().connection_can_close() {}
+    }
+
+    pub fn is_closed(&self) -> bool {
+        self.connection.lock().unwrap().is_connection_closed()
     }
 
     pub fn wait_for_close(&self) {
-        while !self.connection.lock().unwrap().is_connection_closed() {}
+        while !self.is_closed() {}
         println!("done here");
     }
 
@@ -63,7 +65,7 @@ impl SPPPConnection {
 
 impl Drop for SPPPConnection {
     fn drop(&mut self) {
-        //self.close();
+        self.close();
     }
 }
 

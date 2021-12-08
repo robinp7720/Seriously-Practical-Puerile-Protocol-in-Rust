@@ -38,6 +38,8 @@ pub struct Connection {
     next_expected_sequence_number: Arc<Mutex<u32>>,
     proccessing_retransmit: Arc<Mutex<bool>>,
     processing_sending: Arc<Mutex<bool>>,
+
+    packet_counter: u32,
 }
 
 struct TimeoutPacket {
@@ -91,6 +93,7 @@ impl Connection {
             next_expected_sequence_number: Arc::new(Mutex::new(starting_sequence_number)),
             proccessing_retransmit: Arc::new(Mutex::new(false)),
             processing_sending: Arc::new(Mutex::new(false)),
+            packet_counter: 0,
         }
     }
 
@@ -216,7 +219,7 @@ impl Connection {
             packet
         );
 
-        if (packet.get_sequence_number() < expected_sequence_number) {
+        if packet.get_sequence_number() < expected_sequence_number {
             packet_expected = false;
         }
 
@@ -290,6 +293,8 @@ impl Connection {
     }
 
     pub fn handle_cookie_echo(&mut self, packet: Packet) {
+        self.packet_counter -= 1;
+
         let cookie = ConnectionCookie::from_bytes(packet.get_payload());
 
         // TODO: Handle expired cookie
@@ -323,24 +328,24 @@ impl Connection {
     pub fn handle_fin(&mut self, packet: Packet) {
         self.send_ack(packet.get_sequence_number());
 
-        let connection_state = self.connection_state.lock().unwrap();
+        let connection_state = self.get_connection_state();
 
         // We don't want to close yet, but the other peer wants to close
-        if *connection_state == ConnectionState::Established {
+        if connection_state == ConnectionState::Established {
             self.set_connection_state(ConnectionState::CloseWait);
 
             return;
         }
 
         // Simultaneous close
-        if *connection_state == ConnectionState::FinWait1 {
+        if connection_state == ConnectionState::FinWait1 {
             self.set_connection_state(ConnectionState::Closing);
 
             return;
         }
 
         // We wanted to close, and now the server does too
-        if *connection_state == ConnectionState::FinWait2 {
+        if connection_state == ConnectionState::FinWait2 {
             self.set_connection_state(ConnectionState::TimeWait);
 
             return;
@@ -350,18 +355,28 @@ impl Connection {
     }
 
     pub fn handle_ack(&mut self, packet: &Packet) {
-        println!("Set packet {} as received", &packet.get_ack_number());
-
         self.in_transit
             .lock()
             .unwrap()
             .insert(packet.get_ack_number(), true);
+
+        self.packet_counter -= 1;
+
+        match self.get_connection_state() {
+            ConnectionState::LastAck => self.set_connection_state(ConnectionState::Closed),
+            ConnectionState::Closing => self.set_connection_state(ConnectionState::Closed),
+            _ => {}
+        }
+
+        println!(
+            "Transit: {}, Set packet {} as received",
+            self.packet_counter,
+            packet.get_ack_number()
+        );
     }
 
     pub fn can_recv(&self) -> bool {
         let incoming = self.incoming.lock().unwrap();
-
-        //println!("{}, {}", incoming.len(), incoming.is_empty());
 
         return !incoming.is_empty();
     }
@@ -379,19 +394,30 @@ impl Connection {
         return output;
     }
 
-    fn send_packet(&self, mut packet: Packet) {
+    fn send_packet(&mut self, mut packet: Packet) {
+        if !packet.is_ack() {
+            self.packet_counter += 1;
+        }
+
+        if packet.is_ack() && packet.is_init() {
+            self.packet_counter += 1;
+        }
+
         let mut seq_num = self.current_send_sequence_number.lock().unwrap();
         // Set the sequence number for the packet
         packet.set_sequence_number(*seq_num);
 
-        println!("Sending packet {}: {:?}", *seq_num, packet);
+        println!(
+            "Transit: {}, Sending packet {}: {:?}",
+            self.packet_counter, *seq_num, packet
+        );
 
         *seq_num += packet.payload_size();
 
         self.sending_queue_tx.as_ref().unwrap().send(packet);
     }
 
-    fn send_ack(&self, seq_num: u32) {
+    fn send_ack(&mut self, seq_num: u32) {
         let mut flags = PacketFlags::new(0);
         flags.ack = true;
 
@@ -411,11 +437,11 @@ impl Connection {
         self.send_packet(packet);
     }
 
-    pub fn send_data(&self, payload: Vec<u8>) {
+    pub fn send_data(&mut self, payload: Vec<u8>) {
         self.append_to_send_queue(payload);
     }
 
-    fn append_to_send_queue(&self, payload: Vec<u8>) {
+    fn append_to_send_queue(&mut self, payload: Vec<u8>) {
         let chunks: Vec<&[u8]> = payload.chunks(MAX_PAYLOAD_SIZE).collect();
 
         for chunk in chunks {
@@ -471,7 +497,7 @@ impl Connection {
         self.send_packet(packet);
     }
 
-    pub fn send_cookie_ack(&self) {
+    pub fn send_cookie_ack(&mut self) {
         let cookie = self.cookie.as_ref().unwrap();
 
         let mut flags = PacketFlags::new(0);
@@ -488,7 +514,7 @@ impl Connection {
         self.send_packet(packet);
     }
 
-    pub fn send_fin(&self) {
+    pub fn send_fin(&mut self) {
         let mut flags = PacketFlags::new(0);
         flags.fin = true;
 
@@ -521,10 +547,7 @@ impl Connection {
     }
 
     pub fn connection_can_close(&self) -> bool {
-        println!("Checking in transit count");
-        let in_transit_count = self.in_transit.lock().unwrap().len();
-
-        in_transit_count == 0
+        self.packet_counter == 0
     }
 
     pub fn wait_for_last_ack(&self) {
@@ -535,12 +558,18 @@ impl Connection {
         self.set_connection_state(ConnectionState::Closed)
     }
 
-    pub fn close(&self) {
+    pub fn close(&mut self) {
         self.send_fin();
     }
 
     pub fn is_connection_closed(&self) -> bool {
         self.get_connection_state() == ConnectionState::Closed
+    }
+}
+
+impl Drop for Connection {
+    fn drop(&mut self) {
+        println!("connection dropped");
     }
 }
 
