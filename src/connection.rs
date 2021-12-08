@@ -293,8 +293,6 @@ impl Connection {
     }
 
     pub fn handle_cookie_echo(&mut self, packet: Packet) {
-        self.packet_counter -= 1;
-
         let cookie = ConnectionCookie::from_bytes(packet.get_payload());
 
         // TODO: Handle expired cookie
@@ -364,7 +362,14 @@ impl Connection {
 
         match self.get_connection_state() {
             ConnectionState::LastAck => self.set_connection_state(ConnectionState::Closed),
-            ConnectionState::Closing => self.set_connection_state(ConnectionState::Closed),
+            ConnectionState::FinWait1 => {
+                self.set_connection_state(ConnectionState::FinWait2);
+                println!("Now in FinWait2")
+            }
+            ConnectionState::Closing => {
+                self.set_connection_state(ConnectionState::TimeWait);
+                println!("Now in timewait")
+            }
             _ => {}
         }
 
@@ -400,7 +405,7 @@ impl Connection {
         }
 
         if packet.is_ack() && packet.is_init() {
-            self.packet_counter += 1;
+            //self.packet_counter += 1;
         }
 
         let mut seq_num = self.current_send_sequence_number.lock().unwrap();
@@ -552,10 +557,6 @@ impl Connection {
 
     pub fn wait_for_last_ack(&self) {
         while !self.connection_can_close() {}
-    }
-
-    fn close_connection(&self) {
-        self.set_connection_state(ConnectionState::Closed)
     }
 
     pub fn close(&mut self) {
