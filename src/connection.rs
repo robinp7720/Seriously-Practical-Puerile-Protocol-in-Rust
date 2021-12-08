@@ -304,9 +304,9 @@ impl Connection {
             return;
         }
 
-        // Remove the init-ack from the in-transit queue.
+        // Set the init-ack as received in the in-transit queue.
         // If we are handling a cookie-echo, it means it has arrived
-        self.in_transit.lock().unwrap().remove(&(0 as u32));
+        self.in_transit.lock().unwrap().insert(0, true);
 
         self.set_connection_state(ConnectionState::Established);
 
