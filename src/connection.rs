@@ -3,11 +3,12 @@ use crate::cookie::ConnectionCookie;
 use crate::packet::{Packet, PacketFlags, PrimaryHeader};
 use std::collections::{HashMap, VecDeque};
 use std::net::{SocketAddr, UdpSocket};
+use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::SystemTime;
 
-#[derive(Eq, PartialEq, Copy, Clone)]
+#[derive(Eq, PartialEq, Copy, Clone, Debug)]
 pub enum ConnectionState {
     Listen,
     CookieWait,
@@ -27,8 +28,10 @@ pub struct Connection {
     connection_id: u32,
     socket: UdpSocket,
     incoming: Mutex<VecDeque<Packet>>,
-    sending_queue: Arc<Mutex<VecDeque<Packet>>>,
-    in_transit: Arc<Mutex<HashMap<u32, TimeoutPacket>>>,
+    sending_queue_tx: Option<Sender<Packet>>,
+    in_transit_queue_tx: Option<Sender<TimeoutPacket>>,
+
+    in_transit: Arc<Mutex<HashMap<u32, bool>>>,
     connection_state: Mutex<ConnectionState>,
     cookie: Option<ConnectionCookie>,
     current_send_sequence_number: Arc<Mutex<u32>>,
@@ -77,8 +80,11 @@ impl Connection {
             connection_id,
             socket,
             incoming: Mutex::new(VecDeque::new()),
-            sending_queue: Arc::new(Mutex::new(VecDeque::new())),
+
+            sending_queue_tx: None,
+            in_transit_queue_tx: None,
             in_transit: Arc::new(Mutex::new(HashMap::new())),
+
             connection_state: Mutex::new(current_state),
             cookie,
             current_send_sequence_number: Arc::new(Mutex::new(0)),
@@ -88,54 +94,61 @@ impl Connection {
         }
     }
 
-    pub fn start_threads(&self) {
-        self.start_connection_thread();
-        self.start_timeout_monitor_thread();
+    pub fn start_threads(&mut self) {
+        let (sending_queue_tx, sending_queue_rx) = channel::<Packet>();
+        let (transit_queue_tx, transit_queue_rx) = channel::<TimeoutPacket>();
+
+        self.sending_queue_tx = Some(sending_queue_tx);
+        self.in_transit_queue_tx = Some(transit_queue_tx);
+
+        self.start_send_thread(sending_queue_rx);
+        self.start_timeout_monitor_thread(transit_queue_rx);
     }
 
-    pub fn start_connection_thread(&self) {
-        let sending_queue = self.sending_queue.clone();
+    pub fn start_send_thread(&mut self, sending_queue_rx: Receiver<Packet>) {
         let in_transit = self.in_transit.clone();
+        let in_transit_queue = self.in_transit_queue_tx.as_ref().unwrap().clone();
+
         let addr = self.addr.clone();
         let socket = self.socket.try_clone().unwrap();
         let processing_sending = self.processing_sending.clone();
 
         thread::spawn(move || {
             loop {
+                let packet = sending_queue_rx.recv().unwrap();
+
                 {
                     *processing_sending.lock().unwrap() = true;
                 }
 
-                let first_packet = { sending_queue.lock().unwrap().pop_front() };
-
-                if let Some(packet) = first_packet {
-                    match socket.send_to(&*packet.to_bytes(), addr) {
-                        Ok(_) => {}
-                        Err(_) => {
-                            println!("We failed to send a packet!?")
-                        }
-                    };
-
-                    // Don't bother checking if an ACK packet is still in transit
-                    if packet.is_ack() && packet.payload_size() == 0 {
-                        continue;
+                match socket.send_to(&*packet.to_bytes(), addr) {
+                    Ok(_) => {}
+                    Err(_) => {
+                        println!("We failed to send a packet!?")
                     }
+                };
 
-                    // We don't care if the cookie ack arrives
-                    if packet.is_cookie() && packet.is_ack() {
-                        continue;
-                    }
-
-                    // We need to keep track of which packets are currently in transit
-                    // so we can accept acknowledgements for them later
-                    in_transit.lock().unwrap().insert(
-                        packet.get_sequence_number(),
-                        TimeoutPacket {
-                            send_time: SystemTime::now(),
-                            packet,
-                        },
-                    );
+                // Don't bother checking if an ACK packet is still in transit
+                if packet.is_ack() && packet.payload_size() == 0 {
+                    continue;
                 }
+
+                // We don't care if the cookie ack arrives
+                if packet.is_cookie() && packet.is_ack() {
+                    continue;
+                }
+
+                // We need to keep track of which packets are currently in transit
+                // so we can accept acknowledgements for them later
+                in_transit
+                    .lock()
+                    .unwrap()
+                    .insert(packet.get_sequence_number(), false);
+
+                in_transit_queue.send(TimeoutPacket {
+                    send_time: SystemTime::now(),
+                    packet,
+                });
 
                 {
                     *processing_sending.lock().unwrap() = false;
@@ -144,42 +157,47 @@ impl Connection {
         });
     }
 
-    pub fn start_timeout_monitor_thread(&self) {
-        let sending_queue = self.sending_queue.clone();
+    fn start_timeout_monitor_thread(&self, transit_queue_rx: Receiver<TimeoutPacket>) {
+        let sending_queue_tx = self.sending_queue_tx.as_ref().unwrap().clone();
         let in_transit = self.in_transit.clone();
         let proccessing_retransmit = self.proccessing_retransmit.clone();
 
         thread::spawn(move || loop {
             {
+                let current_timeout_packet = transit_queue_rx.recv().unwrap();
+
+                if !current_timeout_packet.timed_out() {
+                    thread::sleep(
+                        SystemTime::now()
+                            .duration_since(
+                                current_timeout_packet.send_time + RETRANSMISSION_TIMEOUT,
+                            )
+                            .unwrap(),
+                    )
+                }
+
                 {
                     *proccessing_retransmit.lock().unwrap() = true;
                 }
 
-                let mut in_transit = in_transit.lock().unwrap();
+                let ack_received = in_transit
+                    .lock()
+                    .unwrap()
+                    .remove(&current_timeout_packet.packet.get_sequence_number())
+                    .unwrap();
 
-                let items = in_transit.drain_filter(|_key, val| val.timed_out());
-                let mut sending_queue = sending_queue.lock().unwrap();
-
-                for item in items.into_iter() {
-                    let packet = item.1.packet;
-
-                    if packet.is_init() && packet.is_ack() {
-                        println!("The init ack has timed out. This is a problem. Chances are we can't recover");
-                        //continue;
-                    }
-
-                    println!("Packet has timed out: {:?}", packet);
-                    sending_queue.push_back(packet);
+                if !ack_received {
+                    sending_queue_tx.send(current_timeout_packet.packet);
                 }
 
                 {
                     *proccessing_retransmit.lock().unwrap() = false;
                 }
             }
-
-            thread::sleep(RETRANSMISSION_TIMEOUT / 10)
         });
     }
+
+    pub fn start_receive_thread(&self) {}
 
     pub fn verify_cookie(&self, cookie: &ConnectionCookie) -> bool {
         // TODO: Calculate MAC (Cookie Signature)
@@ -308,48 +326,39 @@ impl Connection {
     pub fn handle_fin(&mut self, packet: Packet) {
         self.send_ack(packet.get_sequence_number());
 
-        if self.get_connection_state() == ConnectionState::Established {
+        let connection_state = self.connection_state.lock().unwrap();
+
+        // We don't want to close yet, but the other peer wants to close
+        if *connection_state == ConnectionState::Established {
             self.set_connection_state(ConnectionState::CloseWait);
 
             return;
         }
 
-        if self.get_connection_state() == ConnectionState::FinWait2 {
+        // Simultaneous close
+        if *connection_state == ConnectionState::FinWait1 {
+            self.set_connection_state(ConnectionState::Closing);
+
+            return;
+        }
+
+        // We wanted to close, and now the server does too
+        if *connection_state == ConnectionState::FinWait2 {
             self.set_connection_state(ConnectionState::TimeWait);
 
             return;
         }
 
-        panic!("Invalid state when received fin");
+        panic!("Invalid state when received fin {:?}", connection_state);
     }
 
     pub fn handle_ack(&mut self, packet: &Packet) {
-        if self.get_connection_state() == ConnectionState::FinWait1 {
-            self.set_connection_state(ConnectionState::FinWait2)
-        }
+        println!("Set packet {} as received", &packet.get_ack_number());
 
-        println!(
-            "Removing packet {} from transit map",
-            &packet.get_ack_number()
-        );
-
-        match self
-            .in_transit
+        self.in_transit
             .lock()
             .unwrap()
-            .remove(&packet.get_ack_number())
-        {
-            None => {
-                println!("We couldn't remove that packet from the transit map. It doesn't exist!")
-            }
-            Some(_) => {}
-        };
-
-        println!("Remaining elements:",);
-        for key in self.in_transit.lock().unwrap().keys() {
-            println!("{}", key);
-        }
-        println!("--------");
+            .insert(packet.get_ack_number(), true);
     }
 
     pub fn can_recv(&self) -> bool {
@@ -382,7 +391,7 @@ impl Connection {
 
         *seq_num += packet.payload_size();
 
-        self.sending_queue.lock().unwrap().push_back(packet);
+        self.sending_queue_tx.as_ref().unwrap().send(packet);
     }
 
     fn send_ack(&self, seq_num: u32) {
@@ -515,19 +524,26 @@ impl Connection {
     }
 
     pub fn connection_can_close(&self) -> bool {
+        println!("Checking in transit count");
         let in_transit_count = self.in_transit.lock().unwrap().len();
-        let to_send_count = self.sending_queue.lock().unwrap().len();
-        let is_processing_retransmit = *self.proccessing_retransmit.lock().unwrap();
-        let is_processing_sending = *self.processing_sending.lock().unwrap();
 
         in_transit_count == 0
-            && to_send_count == 0
-            && !is_processing_retransmit
-            && !is_processing_sending
     }
 
     pub fn wait_for_last_ack(&self) {
         while !self.connection_can_close() {}
+    }
+
+    fn close_connection(&self) {
+        self.set_connection_state(ConnectionState::Closed)
+    }
+
+    pub fn close(&self) {
+        self.send_fin();
+    }
+
+    pub fn is_connection_closed(&self) -> bool {
+        self.get_connection_state() == ConnectionState::Closed
     }
 }
 

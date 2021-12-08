@@ -35,13 +35,35 @@ impl SPPPConnection {
     }
 
     pub fn wait_for_no_sending(&self) {
-        while !self.connection.lock().unwrap().connection_can_close() {}
+        while !self.connection.lock().unwrap().connection_can_close() {
+            println!("Waiting");
+        }
+    }
+
+    pub fn wait_for_close(&self) {
+        while !self.connection.lock().unwrap().is_connection_closed() {}
+        println!("done here");
+    }
+
+    pub fn close(&self) {
+        println!("Waiting for everything to be sent");
+        self.wait_for_no_sending();
+
+        {
+            println!("Send our intention to close the connection");
+            self.connection.lock().unwrap().close();
+        }
+
+        println!("We sent our intention to close. Wait for the connection to actually be closed");
+        self.wait_for_close();
+
+        println!("Connection closed!");
     }
 }
 
 impl Drop for SPPPConnection {
     fn drop(&mut self) {
-        self.wait_for_no_sending();
+        //self.close();
     }
 }
 
