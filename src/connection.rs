@@ -36,8 +36,6 @@ pub struct Connection {
     cookie: Option<ConnectionCookie>,
     current_send_sequence_number: Arc<Mutex<u32>>,
     next_expected_sequence_number: Arc<Mutex<u32>>,
-    proccessing_retransmit: Arc<Mutex<bool>>,
-    processing_sending: Arc<Mutex<bool>>,
 
     packet_counter: u32,
 }
@@ -91,8 +89,6 @@ impl Connection {
             cookie,
             current_send_sequence_number: Arc::new(Mutex::new(0)),
             next_expected_sequence_number: Arc::new(Mutex::new(starting_sequence_number)),
-            proccessing_retransmit: Arc::new(Mutex::new(false)),
-            processing_sending: Arc::new(Mutex::new(false)),
             packet_counter: 0,
         }
     }
@@ -114,7 +110,6 @@ impl Connection {
 
         let addr = self.addr.clone();
         let socket = self.socket.try_clone().unwrap();
-        let processing_sending = self.processing_sending.clone();
 
         thread::spawn(move || {
             loop {
@@ -152,10 +147,6 @@ impl Connection {
                     send_time: SystemTime::now(),
                     packet,
                 });
-
-                {
-                    *processing_sending.lock().unwrap() = false;
-                }
             }
         });
     }
@@ -163,7 +154,6 @@ impl Connection {
     fn start_timeout_monitor_thread(&self, transit_queue_rx: Receiver<TimeoutPacket>) {
         let sending_queue_tx = self.sending_queue_tx.as_ref().unwrap().clone();
         let in_transit = self.in_transit.clone();
-        let proccessing_retransmit = self.proccessing_retransmit.clone();
 
         thread::spawn(move || loop {
             {
@@ -176,10 +166,6 @@ impl Connection {
                     thread::sleep(time_to_wait)
                 }
 
-                {
-                    *proccessing_retransmit.lock().unwrap() = true;
-                }
-
                 let ack_received = in_transit
                     .lock()
                     .unwrap()
@@ -188,10 +174,6 @@ impl Connection {
 
                 if !ack_received {
                     sending_queue_tx.send(current_timeout_packet.packet);
-                }
-
-                {
-                    *proccessing_retransmit.lock().unwrap() = false;
                 }
             }
         });
