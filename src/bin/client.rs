@@ -8,8 +8,9 @@ fn main() {
 
     println!("We made it! {:?}", data);
 
-    con.send(vec![0, 0, 0, 0, 3, 8, 7]);
-    con.send(vec![0, 0, 0, 0, 1, 1, 1]);
+    con.send(Vec::from("This is fricken awesome!\n".as_bytes()));
+    con.send(Vec::from("This is the second message\n".as_bytes()));
+    con.send(Vec::from("close please!\n".as_bytes()));
 
     /*loop {
         let data = con.recv().unwrap();

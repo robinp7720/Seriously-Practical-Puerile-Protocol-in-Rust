@@ -54,6 +54,7 @@ impl ConnectionManager {
 
                     let mut connection =
                         Connection::new(src, socket.try_clone().unwrap(), None, None);
+
                     connection.start_threads();
                     connection.send_init_ack();
 
@@ -72,7 +73,7 @@ impl ConnectionManager {
                 // SERVER SENDING CONNECTION ACKNOWLEDGEMENT to CLIENT
                 // Here we create the connection object on the client
                 if packet.is_init() && packet.is_ack() {
-                    let connection = Connection::new(
+                    let mut connection = Connection::new(
                         src,
                         socket.try_clone().unwrap(),
                         Some(packet.get_connection_id()),
