@@ -1,5 +1,11 @@
-stable:cargo:
+tests:
   image: rustdocker/rust:nightly
   stage: test
   script:
     - cargo test
+
+fmt:
+  image: rustdocker/rust:nightly
+  stage: test
+  script:
+    - cargo fmt --check
