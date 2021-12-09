@@ -16,9 +16,6 @@ fn main() {
     let adresses = &args[1];
     let port = &args[2];
 
-    let mut buffer = String::new();
-    let mut stdin = io::stdin();
-
     println!("Establishing connection...");
 
     let mut socket = SPPPSocket::new(None);
@@ -26,18 +23,21 @@ fn main() {
 
     println!("Socket is open.");
 
-    // raad from stdin and write it to socket
+    let mut stdin = io::stdin();
+
     let con_clone = con.clone();
+    // raad from stdin and write it to socket
     thread::spawn(move || loop {
+        let mut buffer = String::new();
         stdin.read_line(&mut buffer).unwrap();
-        con_clone.send(Vec::from(buffer.as_bytes()));
+        con_clone.send(Vec::from(buffer.trim_end().as_bytes()));
     });
 
     // read from socket and print to stdout
     loop {
         if con.can_recv() {
             let data = con.recv().unwrap();
-            println!("Got message: {:?}", data);
+            println!("Got message: {}", String::from_utf8_lossy(&data));
         }
     }
 }
