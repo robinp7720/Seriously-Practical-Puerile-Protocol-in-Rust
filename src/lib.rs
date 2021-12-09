@@ -14,6 +14,7 @@ use std::io::Error;
 use std::net::{ToSocketAddrs, UdpSocket};
 use std::sync::{Arc, Mutex};
 
+#[derive(Clone)]
 pub struct SPPPConnection {
     connection: Arc<Mutex<Connection>>,
 }
