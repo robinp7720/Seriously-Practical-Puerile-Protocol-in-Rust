@@ -69,4 +69,8 @@ impl ConnectionCookie {
                 .unwrap()
                 .as_millis()
     }
+
+    pub fn get_size(&self) -> usize {
+        self.to_bytes().len()
+    }
 }

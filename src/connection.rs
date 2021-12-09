@@ -42,6 +42,12 @@ struct TimeoutPacket {
     packet: Packet,
 }
 
+impl TimeoutPacket {
+    pub fn timed_out(&self) -> bool {
+        SystemTime::now().duration_since(self.send_time).unwrap() > RETRANSMISSION_TIMEOUT
+    }
+}
+
 impl Connection {
     pub fn new(
         addr: SocketAddr,
@@ -56,10 +62,14 @@ impl Connection {
 
         // The starting state should be cookie wait if we are a client
         let mut current_state = ConnectionState::CookieWait;
+        let mut starting_sequence_number: u32 = 0;
 
-        // and Listen if we are a server
         if cookie.is_none() {
             current_state = ConnectionState::Listen;
+        }
+
+        if cookie.is_some() {
+            starting_sequence_number = cookie.as_ref().unwrap().get_size() as u32;
         }
 
         Connection {
@@ -72,7 +82,7 @@ impl Connection {
             connection_state: Mutex::new(current_state),
             cookie,
             current_send_sequence_number: Arc::new(Mutex::new(0)),
-            next_expected_sequence_number: Arc::new(Mutex::new(0)),
+            next_expected_sequence_number: Arc::new(Mutex::new(starting_sequence_number)),
             proccessing_retransmit: Arc::new(Mutex::new(false)),
             processing_sending: Arc::new(Mutex::new(false)),
         }
@@ -147,10 +157,8 @@ impl Connection {
 
                 let mut in_transit = in_transit.lock().unwrap();
 
-                let items = in_transit.drain_filter(|_key, val| {
-                    SystemTime::now().duration_since(val.send_time).unwrap()
-                        > RETRANSMISSION_TIMEOUT
-                });
+                let items = in_transit.drain_filter(|_key, val| val.timed_out());
+                let mut sending_queue = sending_queue.lock().unwrap();
 
                 for item in items.into_iter() {
                     let packet = item.1.packet;
@@ -161,7 +169,7 @@ impl Connection {
                     }
 
                     println!("Packet has timed out: {:?}", packet);
-                    sending_queue.lock().unwrap().push_back(packet);
+                    sending_queue.push_back(packet);
                 }
 
                 {
@@ -175,7 +183,6 @@ impl Connection {
 
     pub fn verify_cookie(&self, cookie: &ConnectionCookie) -> bool {
         // TODO: Calculate MAC (Cookie Signature)
-
         if cookie.source_addr != self.addr {
             return false;
         }
