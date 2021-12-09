@@ -3,6 +3,8 @@ tests:
   stage: test
   script:
     - cargo test
+  tags:
+    - privileged
 
 fmt:
   image: rustdocker/rust:nightly
