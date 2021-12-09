@@ -14,40 +14,66 @@ use std::io::Error;
 use std::net::{ToSocketAddrs, UdpSocket};
 use std::sync::{Arc, Mutex};
 
+/// SPPP Connection object handling one connection to a peer or server.
+/// This object is returned to the program SPPPSocket::accept, SPPPSocket::listen.
 #[derive(Clone)]
 pub struct SPPPConnection {
     connection: Arc<Mutex<Connection>>,
 }
 
 impl SPPPConnection {
+    /// Public API call to send data.
+    ///
+    /// # Arguments
+    ///
+    ///  *   `payload` - payload supposed to be send as a vector of bytes
     pub fn send(&self, payload: Vec<u8>) {
         let mut connection = self.connection.lock().unwrap();
         connection.send_data(payload);
     }
 
+    /// Public API call to receive data.
+    ///
+    /// # Returns
+    /// Returns a Result object containing a vector of payload bytes received or an error.
     pub fn recv(&mut self) -> Result<Vec<u8>, Error> {
         while !self.can_recv() {}
 
         Ok(self.connection.lock().unwrap().recv())
     }
 
+    /// Public API call to check if data can be received.
+    ///
+    /// # Returns
+    /// Returns True if data is in the receive buffer or false otherwise.
     pub fn can_recv(&self) -> bool {
         self.connection.lock().unwrap().can_recv()
     }
 
+    /// Private function call to wait while there are still unacknowledged packets.
+    ///
+    /// # Returns
+    /// Returns True if data is in the receive buffer or false otherwise.
     pub fn wait_for_no_sending(&self) {
+        // make private if not part of the api.
         while !self.connection.lock().unwrap().connection_can_close() {}
     }
 
+    /// Public API call to check the corresponding connection to the SPPPConnection is closed.
+    ///
+    /// # Returns
+    /// Returns True if connection is in the closed state or false otherwise.
     pub fn is_closed(&self) -> bool {
         self.connection.lock().unwrap().is_connection_closed()
     }
 
     pub fn wait_for_close(&self) {
+        // !ToDo: Change API calls so that they match the description. This should probably be wait.
         while !self.is_closed() {}
         println!("done here");
     }
 
+    /// Public API call initiate the closing of the connection.
     pub fn close(&self) {
         println!("Waiting for everything to be sent");
         self.wait_for_no_sending();
@@ -75,6 +101,15 @@ pub struct SPPPSocket {
 }
 
 impl SPPPSocket {
+    /// Public API call to create a new SPPPSocket.
+    /// This is the Object providing the functionality of the SPPProtocol.
+    ///
+    /// # Arguments
+    ///
+    /// *   `port` - port to connect the underlying UDP socket to.
+    ///
+    /// # Returns
+    /// Returns the SPPPSocket object for the calling program to interact with.
     pub fn new(port: Option<u16>) -> Self {
         let socket = match port {
             None => UdpSocket::bind("0.0.0.0:0").unwrap(),
@@ -95,6 +130,10 @@ impl SPPPSocket {
         todo!()
     }*/
 
+    /// Public API call to accept incoming connections and establish a connection.
+    ///
+    /// # Returns
+    /// Returns the SPPPConnection object over which data can be sent and received.
     pub fn accept(&self) -> Result<SPPPConnection, Error> {
         let connection = self.connection_manager.accept();
 
@@ -103,6 +142,14 @@ impl SPPPSocket {
         Ok(SPPPConnection { connection })
     }
 
+    /// Public API call to connect to another SPPPSocket.
+    ///
+    /// # Arguments
+    ///
+    /// *   `addr` - ToSocketAddrs object identifying the remote IP address and port.
+    ///
+    /// # Returns
+    /// Returns the SPPPConnection object over which data can be sent and received.
     pub fn connect<A: ToSocketAddrs>(&self, addr: A) -> Result<SPPPConnection, Error> {
         let connection = self.connection_manager.connect(addr)?;
 
