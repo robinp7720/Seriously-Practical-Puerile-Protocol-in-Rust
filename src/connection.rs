@@ -6,7 +6,7 @@ use std::net::{SocketAddr, UdpSocket};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::{Duration, SystemTime};
+use std::time::SystemTime;
 
 #[derive(Eq, PartialEq, Copy, Clone, Debug)]
 pub enum ConnectionState {
@@ -34,10 +34,11 @@ pub struct Connection {
     in_transit: Arc<Mutex<HashMap<u32, bool>>>,
     connection_state: Arc<Mutex<ConnectionState>>,
     cookie: Option<ConnectionCookie>,
-    current_send_sequence_number: Arc<Mutex<u32>>,
-    next_expected_sequence_number: Arc<Mutex<u32>>,
+    current_send_sequence_number: u32,
+    next_expected_sequence_number: u32,
 
-    packet_counter: u32,
+    pub packet_counter: u32,
+    receive_channel: Option<Sender<Vec<u8>>>,
 }
 
 struct TimeoutPacket {
@@ -87,10 +88,17 @@ impl Connection {
 
             connection_state: Arc::new(Mutex::new(current_state)),
             cookie,
-            current_send_sequence_number: Arc::new(Mutex::new(0)),
-            next_expected_sequence_number: Arc::new(Mutex::new(starting_sequence_number)),
+            current_send_sequence_number: 0,
+            next_expected_sequence_number: 0,
             packet_counter: 0,
+            receive_channel: None,
         }
+    }
+
+    pub fn register_receive_channel(&mut self) -> Receiver<Vec<u8>> {
+        let (send, receive_channel) = channel::<Vec<u8>>();
+        self.receive_channel = Some(send);
+        return receive_channel;
     }
 
     pub fn start_threads(&mut self) {
@@ -115,8 +123,12 @@ impl Connection {
             loop {
                 let packet = sending_queue_rx.recv().unwrap();
 
+                let should_send: u8 = rand::random();
+
                 match socket.send_to(&*packet.to_bytes(), addr) {
-                    Ok(_) => {}
+                    Ok(_) => {
+                        println!("Actually sending: {:?}", packet)
+                    }
                     Err(_) => {
                         println!("We failed to send a packet!?")
                     }
@@ -187,15 +199,16 @@ impl Connection {
     }
 
     pub fn receive_packet(&mut self, packet: Packet) {
-        let expected_sequence_number = { *self.next_expected_sequence_number.lock().unwrap() };
         let mut packet_expected = true;
 
-        if packet.get_sequence_number() < expected_sequence_number {
+        println!("Recevied packet: {:?}", packet);
+
+        if packet.get_sequence_number() < self.next_expected_sequence_number {
             packet_expected = false;
         }
 
-        if packet.get_sequence_number() == expected_sequence_number {
-            *self.next_expected_sequence_number.lock().unwrap() =
+        if packet.get_sequence_number() == self.next_expected_sequence_number {
+            self.next_expected_sequence_number =
                 packet.get_sequence_number() + packet.payload_size();
         }
 
@@ -226,18 +239,58 @@ impl Connection {
             self.handle_ack(&packet);
         }
 
-        if packet.payload_size() > 0 {
+        let connection_state = self.get_connection_state();
+
+        // ignore packets when not in established phase
+        if packet.payload_size() > 0
+            && connection_state != ConnectionState::CookieWait
+            && connection_state != ConnectionState::CookieEchoed
+        {
             println!("Sending ack for {}", packet.get_sequence_number());
             self.send_ack(packet.get_sequence_number());
 
             if packet_expected {
-                self.insert_packet_incoming_queue(packet);
+                self.insert_packet_incoming_queue(packet, packet_expected);
             }
         }
     }
 
-    pub fn insert_packet_incoming_queue(&self, packet: Packet) {
+    pub fn insert_packet_incoming_queue(&mut self, packet: Packet, packet_expected: bool) {
         let mut incoming = self.incoming.lock().unwrap();
+
+        if packet_expected {
+            // send to packet to receive channel
+            self.receive_channel
+                .as_ref()
+                .unwrap()
+                .send(packet.get_payload());
+
+            let mut last_index = 0;
+            let mut next_expected_sequence_number =
+                packet.get_sequence_number() + packet.payload_size();
+
+            for (index, current_packet) in incoming.iter().enumerate() {
+                // find following packet
+                if current_packet.get_sequence_number() == next_expected_sequence_number {
+                    last_index = index;
+                    next_expected_sequence_number += current_packet.payload_size();
+                    self.receive_channel
+                        .as_ref()
+                        .unwrap()
+                        .send(current_packet.get_payload());
+                }
+            }
+
+            self.next_expected_sequence_number = next_expected_sequence_number;
+
+            // remove all packets that were delivered to the application
+            incoming.drain(std::ops::Range {
+                start: 0,
+                end: last_index,
+            });
+
+            return;
+        }
 
         for (i, cur) in incoming.iter().enumerate() {
             if cur.get_sequence_number() > packet.get_sequence_number() {
@@ -262,6 +315,8 @@ impl Connection {
     }
 
     fn set_connection_state(&self, state: ConnectionState) {
+        println!("Setting connection to: {:?}", state);
+
         *self.connection_state.lock().unwrap() = state;
 
         if state == ConnectionState::TimeWait {
@@ -274,6 +329,7 @@ impl Connection {
     }
 
     pub fn handle_cookie_echo(&mut self, packet: Packet) {
+        println!("Received cookie echo");
         let cookie = ConnectionCookie::from_bytes(packet.get_payload());
 
         // TODO: Handle expired cookie
@@ -299,8 +355,8 @@ impl Connection {
 
     pub fn handle_cookie_ack(&mut self, packet: Packet) {
         println!("Handling cookie ack");
-        self.handle_ack(&packet);
         self.set_connection_state(ConnectionState::Established);
+        self.handle_ack(&packet);
     }
 
     pub fn handle_fin(&mut self, packet: Packet) {
@@ -336,18 +392,12 @@ impl Connection {
     }
 
     pub fn handle_ack(&mut self, packet: &Packet) {
-        println!(
-            "Handling ack for packet: {}. In transit: {}",
-            packet.get_sequence_number(),
-            self.packet_counter
-        );
-
         self.in_transit
             .lock()
             .unwrap()
             .insert(packet.get_ack_number(), true);
 
-        self.packet_counter -= 1;
+        self.decrement_packet_counter();
 
         match self.get_connection_state() {
             ConnectionState::LastAck => self.set_connection_state(ConnectionState::Closed),
@@ -361,45 +411,49 @@ impl Connection {
         }
     }
 
-    pub fn can_recv(&self) -> bool {
-        let incoming = self.incoming.lock().unwrap();
-
-        return !incoming.is_empty();
+    fn increment_packet_counter(&mut self) {
+        println!(
+            "Going to increment the packet counter! {} {:p} {:p}",
+            self.packet_counter, &self.packet_counter, self
+        );
+        self.packet_counter += 1;
+        println!(
+            "We incremented the packet counter! {} {:p} {:p}",
+            self.packet_counter, &self.packet_counter, self
+        )
     }
 
-    pub fn recv(&mut self) -> Vec<u8> {
-        let mut incoming = self.incoming.lock().unwrap();
-        let mut output: Vec<u8> = Vec::new();
-
-        for packet in incoming.iter() {
-            output.append(&mut packet.get_payload());
-        }
-
-        incoming.clear();
-
-        return output;
+    fn decrement_packet_counter(&mut self) {
+        println!(
+            "Going to decrement packet counter! {} {:p} {:p}",
+            self.packet_counter, &self.packet_counter, self
+        );
+        self.packet_counter -= 1;
+        println!(
+            "We decremented the packet counter! {} {:p} {:p}",
+            self.packet_counter, &self.packet_counter, self
+        )
     }
 
     fn send_packet(&mut self, mut packet: Packet) {
-        println!(
-            "Sending packet {}. Already in transit: {}",
-            packet.get_sequence_number(),
-            self.packet_counter
-        );
-
-        if !packet.is_ack() {
-            self.packet_counter += 1;
-        }
-
         if packet.is_ack() && packet.is_init() {
             //self.packet_counter += 1;
         }
 
-        let mut seq_num = self.current_send_sequence_number.lock().unwrap();
         // Set the sequence number for the packet
-        packet.set_sequence_number(*seq_num);
+        packet.set_sequence_number(self.current_send_sequence_number);
 
-        *seq_num += packet.payload_size();
+        self.current_send_sequence_number += packet.payload_size();
+
+        println!(
+            "Queueing packet {}. {:?}",
+            packet.get_sequence_number(),
+            packet
+        );
+
+        if !packet.is_ack() {
+            self.increment_packet_counter();
+        }
 
         self.sending_queue_tx.as_ref().unwrap().send(packet);
     }
@@ -411,7 +465,7 @@ impl Connection {
         let packet = Packet::new(
             PrimaryHeader::new(
                 self.connection_id,
-                *self.current_send_sequence_number.lock().unwrap(),
+                self.current_send_sequence_number,
                 seq_num,
                 0,
                 flags,
@@ -565,15 +619,18 @@ mod packet {
     #[test]
     pub fn append_to_send_queue() {
         let addr = SocketAddr::new(IpAddr::from(Ipv4Addr::new(0, 0, 0, 0)), 1200);
-        let con = Connection::new(addr, UdpSocket::bind(addr).unwrap(), None, None);
+        let mut con = Connection::new(addr, UdpSocket::bind(addr).unwrap(), None, None);
 
         for i in [0, 3, 2, 1, 6, 4, 5, 9, 8, 7] {
-            con.insert_packet_incoming_queue(Packet::new(
-                PrimaryHeader::new(0, i, 0, 0, PacketFlags::new(0)),
-                None,
-                None,
-                vec![],
-            ));
+            con.insert_packet_incoming_queue(
+                Packet::new(
+                    PrimaryHeader::new(0, i, 0, 0, PacketFlags::new(0)),
+                    None,
+                    None,
+                    vec![],
+                ),
+                false,
+            );
         }
 
         for (i, cur) in con.incoming.lock().unwrap().iter().enumerate() {

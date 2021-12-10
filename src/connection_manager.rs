@@ -2,6 +2,7 @@ use crate::connection::Connection;
 use crate::constants::MAX_PACKET_SIZE;
 use crate::cookie::ConnectionCookie;
 use crate::packet::{Packet, PacketFlags, PrimaryHeader};
+use std::collections::hash_map::OccupiedError;
 use std::collections::HashMap;
 use std::io::Error;
 use std::net::{ToSocketAddrs, UdpSocket};
@@ -82,10 +83,17 @@ impl ConnectionManager {
 
                     connection.start_threads();
 
-                    connections.lock().unwrap().insert(
+                    match connections.lock().unwrap().try_insert(
                         connection.get_connection_id(),
                         Arc::new(Mutex::new(connection)),
-                    );
+                    ) {
+                        Ok(_) => {
+                            println!("connection inserted into hashmap")
+                        }
+                        Err(e) => {
+                            println!("Connection with same id already exists! The cookie echo was probably lost. We need to resend it. Letting the socket retransmission handle it");
+                        }
+                    }
 
                     continue;
                 }
@@ -95,15 +103,15 @@ impl ConnectionManager {
                 // connection_id
                 let connections = connections.lock().unwrap();
                 let connection = connections.get(&packet.get_connection_id());
-                let connection = match connection {
+                match connection {
                     None => {
                         println!("We received data from a non existing connection. Ignoring");
                         continue;
                     }
-                    Some(connection) => connection.clone(),
+                    Some(connection) => {
+                        connection.lock().unwrap().receive_packet(packet);
+                    }
                 };
-
-                connection.lock().unwrap().receive_packet(packet);
             }
         });
     }
@@ -118,7 +126,19 @@ impl ConnectionManager {
 
                     let connection = connections.get_mut(&connection_id).unwrap();
 
-                    return connection.clone();
+                    println!(
+                        "before clone: {}",
+                        connection.lock().unwrap().packet_counter
+                    );
+
+                    let cloned_connection = Arc::clone(&connection);
+
+                    println!(
+                        "after clone: {}",
+                        cloned_connection.lock().unwrap().packet_counter
+                    );
+
+                    return cloned_connection;
                 }
                 None => {}
             }
@@ -149,9 +169,27 @@ impl ConnectionManager {
         }
 
         for connection in self.connections.lock().unwrap().values_mut() {
-            return Ok(connection.clone());
+            println!(
+                "before clone: {}",
+                connection.lock().unwrap().packet_counter
+            );
+
+            let cloned_connection = Arc::clone(&connection);
+
+            println!(
+                "after clone: {}",
+                cloned_connection.lock().unwrap().packet_counter
+            );
+
+            return Ok(cloned_connection);
         }
 
         Err(Error::new(std::io::ErrorKind::ConnectionRefused, "hello"))
+    }
+}
+
+impl Drop for ConnectionManager {
+    fn drop(&mut self) {
+        println!("Connection manager dropped");
     }
 }

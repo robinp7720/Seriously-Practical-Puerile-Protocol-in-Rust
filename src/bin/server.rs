@@ -5,21 +5,18 @@ use std::thread;
 fn main() {
     let socket = SPPPSocket::new(Some(2030));
 
-    loop {
-        let mut connection = socket.accept().unwrap();
-        connection.send(vec![0; 10]);
+    let mut connection = socket.accept().unwrap();
+    connection.send(vec![0; 10]);
 
-        thread::spawn(move || loop {
-            let data = connection.recv().unwrap();
-            let message = from_utf8(&*data).unwrap();
-            let lines = message.split("\n");
+    let handle = thread::spawn(move || loop {
+        let data = connection.recv().unwrap();
 
-            for line in lines {
-                print!("{}", line);
-                if message == "close please!\n" {
-                    return;
-                }
-            }
-        });
-    }
+        println!("{:?}", data);
+
+        if data == vec![0, 0, 1] {
+            return;
+        }
+    });
+
+    handle.join();
 }
