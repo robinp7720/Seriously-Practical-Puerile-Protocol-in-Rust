@@ -1,11 +1,28 @@
+stages:
+  - format
+  - test
+  - network_test
+
+fmt:
+  image: rustdocker/rust:nightly
+  stage: format
+  script:
+    - cargo fmt --check
+
 tests:
   image: rustdocker/rust:nightly
   stage: test
   script:
     - cargo test
 
-fmt:
+network_test:
   image: rustdocker/rust:nightly
-  stage: test
+  stage: network_test
+  tags:
+    - privileged
   script:
-    - cargo fmt --check
+    - apt-get update
+    - apt-get install iproute2 -y
+    - chmod +x ./tests/realistic_network/configure_interface.sh
+    - ./tests/realistic_network/configure_interface.sh
+    - cargo test --release
