@@ -1,3 +1,4 @@
+use crate::connection_reliability_sender::ConnectionReliabilitySender;
 use crate::constants::{MAX_PAYLOAD_SIZE, RETRANSMISSION_TIMEOUT, TIME_WAIT_TIMEOUT};
 use crate::cookie::ConnectionCookie;
 use crate::packet::{Packet, PacketFlags, PrimaryHeader};
@@ -35,10 +36,7 @@ pub struct Connection {
     connection_id: u32,
     socket: UdpSocket,
     incoming: Mutex<VecDeque<Packet>>,
-    sending_queue_tx: Option<Sender<Packet>>,
-    in_transit_queue_tx: Option<Sender<TimeoutPacket>>,
 
-    in_transit: Arc<Mutex<HashMap<PacketRetransmit, bool>>>,
     connection_state: Arc<Mutex<ConnectionState>>,
     cookie: Option<ConnectionCookie>,
     current_send_sequence_number: u32,
@@ -46,40 +44,26 @@ pub struct Connection {
 
     pub packet_counter: u32,
     receive_channel: Option<Sender<Vec<u8>>>,
-}
 
-struct TimeoutPacket {
-    send_time: SystemTime,
-    packet: Packet,
-}
-
-impl TimeoutPacket {
-    pub fn timed_out(&self) -> bool {
-        SystemTime::now().duration_since(self.send_time).unwrap() > RETRANSMISSION_TIMEOUT
-    }
+    reliable_sender: ConnectionReliabilitySender,
 }
 
 impl Connection {
     pub fn new(
         addr: SocketAddr,
         socket: UdpSocket,
-        connection_id: Option<u32>,
+        connection_id: u32,
         cookie: Option<ConnectionCookie>,
     ) -> Connection {
-        let connection_id = match connection_id {
-            None => rand::random(),
-            Some(connection_id) => connection_id,
-        };
-
         Connection {
+            reliable_sender: ConnectionReliabilitySender::new(
+                addr.clone(),
+                socket.try_clone().unwrap(),
+            ),
             addr,
             connection_id,
             socket,
             incoming: Mutex::new(VecDeque::new()),
-
-            sending_queue_tx: None,
-            in_transit_queue_tx: None,
-            in_transit: Arc::new(Mutex::new(HashMap::new())),
 
             connection_state: Arc::new(Mutex::new(ConnectionState::Closed)),
             cookie: None,
@@ -96,115 +80,6 @@ impl Connection {
         return receive_channel;
     }
 
-    pub fn start_threads(&mut self) {
-        let (sending_queue_tx, sending_queue_rx) = channel::<Packet>();
-        let (transit_queue_tx, transit_queue_rx) = channel::<TimeoutPacket>();
-
-        self.sending_queue_tx = Some(sending_queue_tx);
-        self.in_transit_queue_tx = Some(transit_queue_tx);
-
-        self.start_send_thread(sending_queue_rx);
-        self.start_timeout_monitor_thread(transit_queue_rx);
-    }
-
-    pub fn start_send_thread(&mut self, sending_queue_rx: Receiver<Packet>) {
-        let in_transit = self.in_transit.clone();
-        let in_transit_queue = self.in_transit_queue_tx.as_ref().unwrap().clone();
-
-        let addr = self.addr.clone();
-        let socket = self.socket.try_clone().unwrap();
-
-        thread::spawn(move || {
-            loop {
-                let packet = sending_queue_rx.recv().unwrap();
-
-                match socket.send_to(&*packet.to_bytes(), addr) {
-                    Ok(_) => {
-                        println!("Actually sending: {:?}", packet)
-                    }
-                    Err(_) => {
-                        println!("We failed to send a packet!?")
-                    }
-                };
-
-                // Don't bother checking if an ACK packet is still in transit
-                // This should handle cookie ACKs aswell since they dont have a payload and have
-                // the ack flag set. Why?
-                if packet.is_ack() && packet.payload_size() == 0 {
-                    continue;
-                }
-
-                //We don't care if the cookie ack arrives
-                if packet.is_cookie() && packet.is_ack() {
-                    continue;
-                }
-
-                if packet.is_ack() && packet.is_init() {
-                    continue;
-                }
-
-                // We need to keep track of which packets are currently in transit
-                // so we can accept acknowledgements for them later
-                let mut packet_classification =
-                    PacketRetransmit::Data(packet.get_sequence_number());
-
-                if packet.is_init() {
-                    packet_classification = PacketRetransmit::Init;
-                } else if packet.is_cookie() {
-                    packet_classification = PacketRetransmit::CookieEcho;
-                }
-
-                in_transit
-                    .lock()
-                    .unwrap()
-                    .insert(packet_classification, false);
-
-                in_transit_queue.send(TimeoutPacket {
-                    send_time: SystemTime::now(),
-                    packet,
-                });
-            }
-        });
-    }
-
-    fn start_timeout_monitor_thread(&self, transit_queue_rx: Receiver<TimeoutPacket>) {
-        let sending_queue_tx = self.sending_queue_tx.as_ref().unwrap().clone();
-        let in_transit = self.in_transit.clone();
-
-        thread::spawn(move || loop {
-            let current_timeout_packet = transit_queue_rx.recv().unwrap();
-
-            if !current_timeout_packet.timed_out() {
-                let deadline = current_timeout_packet.send_time + RETRANSMISSION_TIMEOUT;
-                let time_to_wait = deadline.duration_since(SystemTime::now()).unwrap();
-
-                thread::sleep(time_to_wait)
-            }
-
-            let mut packet_classification =
-                PacketRetransmit::Data(current_timeout_packet.packet.get_sequence_number());
-
-            if current_timeout_packet.packet.is_init() {
-                packet_classification = PacketRetransmit::Init;
-            }
-
-            if current_timeout_packet.packet.is_cookie() {
-                packet_classification = PacketRetransmit::CookieEcho;
-            }
-
-            let ack_received = in_transit
-                .lock()
-                .unwrap()
-                .remove(&packet_classification)
-                .unwrap();
-
-            if !ack_received {
-                println!("Packet timed out: {:?}", current_timeout_packet.packet);
-                sending_queue_tx.send(current_timeout_packet.packet);
-            }
-        });
-    }
-
     pub fn start_receive_thread(&self) {}
 
     pub fn verify_cookie(&self, cookie: &ConnectionCookie) -> bool {
@@ -218,12 +93,6 @@ impl Connection {
 
     pub fn receive_packet(&mut self, packet: Packet) {
         let mut packet_expected = true;
-
-        println!(
-            "Recevied packet: {}. Expected: {}",
-            packet.get_sequence_number(),
-            self.next_expected_sequence_number
-        );
 
         if packet.get_sequence_number() < self.next_expected_sequence_number {
             packet_expected = false;
@@ -286,11 +155,9 @@ impl Connection {
                     packet.get_sequence_number() + packet.payload_size();
             }
 
-            println!("Sending ack for {}", packet.get_sequence_number());
             self.send_ack(packet.get_sequence_number());
 
             if packet_expected {
-                println!("Packet was expected. Writing it into buffer");
                 self.insert_packet_incoming_queue(packet, packet_expected);
             }
         }
@@ -345,8 +212,6 @@ impl Connection {
     }
 
     fn start_fin_timeout(&self) {
-        println!("Starting timeout");
-
         let connection_state = self.connection_state.clone();
 
         thread::spawn(move || {
@@ -356,8 +221,6 @@ impl Connection {
     }
 
     fn set_connection_state(&self, state: ConnectionState) {
-        println!("Setting connection to: {:?}", state);
-
         *self.connection_state.lock().unwrap() = state;
 
         if state == ConnectionState::TimeWait {
@@ -384,7 +247,6 @@ impl Connection {
     }
 
     pub fn handle_cookie_echo(&mut self, packet: Packet) {
-        println!("Received cookie echo");
         let cookie = ConnectionCookie::from_bytes(packet.get_payload());
 
         // TODO: Handle expired cookie
@@ -405,7 +267,6 @@ impl Connection {
     }
 
     pub fn handle_cookie_ack(&mut self, packet: Packet) {
-        println!("Handling cookie ack");
         self.set_connection_state(ConnectionState::Established);
         self.handle_ack(&packet);
     }
@@ -435,34 +296,10 @@ impl Connection {
 
             return;
         }
-
-        println!(
-            "received fin while in invalid state. Our ack probably never arrived {:?}",
-            self.connection_state
-        );
     }
 
     pub fn handle_ack(&mut self, packet: &Packet) {
-        println!("received an ack for {}", packet.get_ack_number());
-
-        let mut packet_classification = PacketRetransmit::Data(packet.get_ack_number());
-
-        if packet.is_init() {
-            packet_classification = PacketRetransmit::Init;
-        }
-
-        if packet.is_cookie() {
-            packet_classification = PacketRetransmit::CookieEcho;
-        }
-
-        let duplicate = {
-            let mut in_transit_lock = self.in_transit.lock().unwrap();
-
-            match in_transit_lock.insert(packet_classification, true) {
-                None => true,
-                Some(duplicate) => duplicate,
-            }
-        };
+        let duplicate = self.reliable_sender.handle_ack(packet);
 
         if !duplicate {
             self.decrement_packet_counter();
@@ -481,50 +318,24 @@ impl Connection {
     }
 
     fn increment_packet_counter(&mut self) {
-        println!(
-            "Going to increment the packet counter! {} {:p} {:p}",
-            self.packet_counter, &self.packet_counter, self
-        );
         self.packet_counter += 1;
-        println!(
-            "We incremented the packet counter! {} {:p} {:p}",
-            self.packet_counter, &self.packet_counter, self
-        )
     }
 
     fn decrement_packet_counter(&mut self) {
-        println!(
-            "Going to decrement packet counter! {} {:p} {:p}",
-            self.packet_counter, &self.packet_counter, self
-        );
         self.packet_counter -= 1;
-        println!(
-            "We decremented the packet counter! {} {:p} {:p}",
-            self.packet_counter, &self.packet_counter, self
-        )
     }
 
     fn send_packet(&mut self, mut packet: Packet) {
-        if packet.is_ack() && packet.is_init() {
-            //self.packet_counter += 1;
-        }
-
         // Set the sequence number for the packet
         packet.set_sequence_number(self.current_send_sequence_number);
 
         self.current_send_sequence_number += packet.payload_size();
 
-        println!(
-            "Queueing packet {}. {:?}",
-            packet.get_sequence_number(),
-            packet
-        );
-
         if !packet.is_ack() {
             self.increment_packet_counter();
         }
 
-        self.sending_queue_tx.as_ref().unwrap().send(packet);
+        self.reliable_sender.send_packet(packet);
     }
 
     fn send_ack(&mut self, seq_num: u32) {
@@ -599,7 +410,6 @@ impl Connection {
     }
 
     pub fn send_cookie_echo(&mut self) {
-        println!("Sending cookie echo");
         let cookie = self.cookie.as_ref().unwrap();
 
         let mut flags = PacketFlags::new(0);
@@ -700,7 +510,7 @@ mod packet {
     #[test]
     pub fn append_to_send_queue() {
         let addr = SocketAddr::new(IpAddr::from(Ipv4Addr::new(0, 0, 0, 0)), 1200);
-        let mut con = Connection::new(addr, UdpSocket::bind(addr).unwrap(), None, None);
+        let mut con = Connection::new(addr, UdpSocket::bind(addr).unwrap(), 0, None);
 
         for i in [0, 3, 2, 1, 6, 4, 5, 9, 8, 7] {
             con.insert_packet_incoming_queue(

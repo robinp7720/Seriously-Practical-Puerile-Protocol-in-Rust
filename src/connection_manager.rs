@@ -55,16 +55,17 @@ impl ConnectionManager {
                 // request.
                 // Therefore, we need to add the new connection request to the connection queue.
                 if packet.get_connection_id() == 0 && packet.is_init() {
-                    let mut connection =
-                        Connection::new(src, socket.try_clone().unwrap(), None, None);
+                    let connection_id: u32 = rand::random();
 
-                    connection.start_threads();
+                    let mut connection =
+                        Connection::new(src, socket.try_clone().unwrap(), connection_id, None);
+
                     connection.send_init_ack();
 
-                    connections.lock().unwrap().insert(
-                        connection.get_connection_id(),
-                        Arc::new(Mutex::new(connection)),
-                    );
+                    connections
+                        .lock()
+                        .unwrap()
+                        .insert(connection_id, Arc::new(Mutex::new(connection)));
 
                     continue;
                 }
@@ -163,11 +164,9 @@ impl ConnectionManager {
         let connection = Arc::new(Mutex::new(Connection::new(
             addr.to_socket_addrs().unwrap().next().unwrap(),
             self.socket.try_clone().unwrap(),
-            Some(0),
+            0,
             None,
         )));
-
-        connection.lock().unwrap().start_threads();
 
         self.connections
             .lock()

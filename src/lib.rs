@@ -3,6 +3,7 @@
 
 mod connection;
 mod connection_manager;
+mod connection_reliability_sender;
 mod constants;
 mod cookie;
 mod packet;
