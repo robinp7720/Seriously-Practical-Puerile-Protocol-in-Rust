@@ -1,8 +1,7 @@
 use crate::connection::Connection;
 use crate::constants::MAX_PACKET_SIZE;
-use crate::cookie::ConnectionCookie;
-use crate::packet::{Packet, PacketFlags, PrimaryHeader};
-use std::collections::hash_map::OccupiedError;
+use crate::packet::Packet;
+use crate::ConnectionState;
 use std::collections::HashMap;
 use std::io::Error;
 use std::net::{ToSocketAddrs, UdpSocket};
@@ -50,43 +49,49 @@ impl ConnectionManager {
                 // request.
                 // Therefore, we need to add the new connection request to the connection queue.
                 if packet.get_connection_id() == 0 && packet.is_init() {
-                    // Insert this packet into the new connection queue
-                    let mut connection_queue = connection_queue.lock().unwrap();
-
                     let mut connection =
                         Connection::new(src, socket.try_clone().unwrap(), None, None);
 
                     connection.start_threads();
                     connection.send_init_ack();
 
-                    let connection_id = connection.get_connection_id();
-
                     connections.lock().unwrap().insert(
                         connection.get_connection_id(),
                         Arc::new(Mutex::new(connection)),
                     );
 
-                    connection_queue.push(connection_id);
-
                     continue;
+                }
+
+                // Push the connection into the available connections queue when the connection
+                // is actually in a state where the connection id is known.
+                if packet.is_cookie() && !packet.is_ack() {
+                    let connection_lock = connections.lock().unwrap();
+
+                    let connection = connection_lock.get(&packet.get_connection_id()).unwrap();
+
+                    if connection.lock().unwrap().get_connection_state() == ConnectionState::Listen
+                    {
+                        let mut connection_queue = connection_queue.lock().unwrap();
+                        connection_queue.push(packet.get_connection_id());
+                    }
                 }
 
                 // SERVER SENDING CONNECTION ACKNOWLEDGEMENT to CLIENT
                 // Here we create the connection object on the client
                 if packet.is_init() && packet.is_ack() {
-                    let mut connection = Connection::new(
-                        src,
-                        socket.try_clone().unwrap(),
-                        Some(packet.get_connection_id()),
-                        Some(ConnectionCookie::from_bytes(packet.get_payload())),
-                    );
+                    let connection = connections.lock().unwrap().remove(&0).unwrap();
 
-                    connection.start_threads();
+                    connection
+                        .lock()
+                        .unwrap()
+                        .set_conncetion_id(packet.get_connection_id());
 
-                    match connections.lock().unwrap().try_insert(
-                        connection.get_connection_id(),
-                        Arc::new(Mutex::new(connection)),
-                    ) {
+                    match connections
+                        .lock()
+                        .unwrap()
+                        .try_insert(packet.get_connection_id(), connection)
+                    {
                         Ok(_) => {
                             println!("connection inserted into hashmap")
                         }
@@ -95,7 +100,8 @@ impl ConnectionManager {
                         }
                     }
 
-                    continue;
+                    // Fall through to the packet handling
+                    // We want the actual packet to be sent to connection for processing
                 }
 
                 // No new connection needs to be setup.
@@ -123,7 +129,6 @@ impl ConnectionManager {
             match connection_queue.lock().unwrap().pop() {
                 Some(connection_id) => {
                     let mut connections = self.connections.lock().unwrap();
-
                     let connection = connections.get_mut(&connection_id).unwrap();
 
                     println!(
@@ -145,46 +150,29 @@ impl ConnectionManager {
         }
     }
 
-    pub fn connect<A: ToSocketAddrs>(&self, addr: A) -> Result<Arc<Mutex<Connection>>, Error> {
+    pub fn connect<A: ToSocketAddrs>(&mut self, addr: A) -> Result<Arc<Mutex<Connection>>, Error> {
         // We want to initiate a new connection.
         // To do this, we need to send an init packet to the server
 
-        let mut flags = PacketFlags::new(0);
-        flags.init = true;
+        let connection = Arc::new(Mutex::new(Connection::new(
+            addr.to_socket_addrs().unwrap().next().unwrap(),
+            self.socket.try_clone().unwrap(),
+            Some(0),
+            None,
+        )));
 
-        let packet = Packet::new(PrimaryHeader::new(0, 0, 0, 0, flags), None, None, vec![]);
+        connection.lock().unwrap().start_threads();
 
-        let payload = packet.to_bytes();
-        self.socket.send_to(&*payload, addr)?;
+        self.connections
+            .lock()
+            .unwrap()
+            .insert(0, connection.clone());
 
-        // Wait for a response
-        loop {
-            // TODO: This will only work if the client connects to one server
-            //       I'm assuming this won't really be a problem, but it's a limitation non the less
-            if self.connections.lock().unwrap().len() == 0 {
-                continue;
-            }
+        {
+            connection.lock().unwrap().send_init();
+        };
 
-            break;
-        }
-
-        for connection in self.connections.lock().unwrap().values_mut() {
-            println!(
-                "before clone: {}",
-                connection.lock().unwrap().packet_counter
-            );
-
-            let cloned_connection = Arc::clone(&connection);
-
-            println!(
-                "after clone: {}",
-                cloned_connection.lock().unwrap().packet_counter
-            );
-
-            return Ok(cloned_connection);
-        }
-
-        Err(Error::new(std::io::ErrorKind::ConnectionRefused, "hello"))
+        return Ok(connection.clone());
     }
 }
 

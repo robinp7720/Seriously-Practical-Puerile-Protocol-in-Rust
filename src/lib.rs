@@ -156,7 +156,7 @@ impl SPPPSocket {
     pub fn accept(&self) -> Result<SPPPConnection, Error> {
         let connection = self.connection_manager.accept();
         let receive_channel: Receiver<Vec<u8>> =
-            connection.lock().unwrap().register_receive_channel();
+            { connection.lock().unwrap().register_receive_channel() };
 
         while connection.lock().unwrap().get_connection_state() != ConnectionState::Established {}
 
@@ -175,14 +175,10 @@ impl SPPPSocket {
     ///
     /// # Returns
     /// Returns the SPPPConnection object over which data can be sent and received.
-    pub fn connect<A: ToSocketAddrs>(&self, addr: A) -> Result<SPPPConnection, Error> {
+    pub fn connect<A: ToSocketAddrs>(&mut self, addr: A) -> Result<SPPPConnection, Error> {
         let connection = self.connection_manager.connect(addr)?;
         let receive_channel: Receiver<Vec<u8>> =
-            connection.lock().unwrap().register_receive_channel();
-
-        {
-            connection.lock().unwrap().send_cookie_echo();
-        }
+            { connection.lock().unwrap().register_receive_channel() };
 
         println!("Waiting for connection to be established");
         while connection.lock().unwrap().get_connection_state() != ConnectionState::Established {}
