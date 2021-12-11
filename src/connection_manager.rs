@@ -41,7 +41,13 @@ impl ConnectionManager {
             loop {
                 let (amt, src) = socket.recv_from(&mut buf).unwrap();
 
-                let packet = Packet::from_bytes(&buf[..amt]);
+                let packet = match Packet::from_bytes(&buf[..amt]) {
+                    Ok(packet) => packet,
+                    Err(_) => {
+                        println!("Received a packet which couldn't be parsed");
+                        continue;
+                    }
+                };
 
                 // CLIENT SENDING A CONNECTION REQUEST TO SERVER
                 // Here we create the connection object for the server

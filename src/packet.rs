@@ -1,3 +1,5 @@
+use std::io::Error;
+
 #[derive(Debug)]
 pub struct PrimaryHeader {
     connection_id: u32,
@@ -35,7 +37,11 @@ impl PrimaryHeader {
         bytes
     }
 
-    fn from_bytes(bytes: &[u8]) -> PrimaryHeader {
+    fn from_bytes(bytes: &[u8]) -> Result<Self, &str> {
+        if bytes.len() != 16 {
+            return Err("header doesn't have a valid length");
+        }
+
         let connection_id: u32 = u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
         let seq_number: u32 = u32::from_be_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]);
         let ack_number: u32 = u32::from_be_bytes([bytes[8], bytes[9], bytes[10], bytes[11]]);
@@ -43,7 +49,13 @@ impl PrimaryHeader {
         let flags = PacketFlags::new(bytes[14]);
         let _next_header: u8 = bytes[15];
 
-        PrimaryHeader::new(connection_id, seq_number, ack_number, arwnd, flags)
+        Ok(PrimaryHeader::new(
+            connection_id,
+            seq_number,
+            ack_number,
+            arwnd,
+            flags,
+        ))
     }
 }
 
@@ -98,7 +110,7 @@ impl EncryptionHeader {
     pub fn to_bytes(&self) -> Vec<u8> {
         todo!();
     }
-    pub fn from_bytes(bytes: &[u8]) -> Self {
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self, &str> {
         todo!();
     }
 }
@@ -113,7 +125,7 @@ impl SignatureHeader {
     pub fn to_bytes(&self) -> Vec<u8> {
         todo!();
     }
-    pub fn from_bytes(bytes: &[u8]) -> Self {
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self, &str> {
         todo!();
     }
 }
@@ -181,13 +193,22 @@ impl Packet {
         self.header.ack_number
     }
 
-    pub fn from_bytes(bytes: &[u8]) -> Self {
-        Packet {
-            header: PrimaryHeader::from_bytes(&*bytes),
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self, &str> {
+        if bytes.len() < 16 {
+            return Err("Packet length is invalid");
+        }
+
+        let header = match PrimaryHeader::from_bytes(&bytes[..16]) {
+            Ok(header) => header,
+            Err(e) => return Err(e),
+        };
+
+        Ok(Packet {
+            header,
             payload: bytes[16..].to_vec(),
             encryption_header: None,
             signature_header: None,
-        }
+        })
     }
 
     pub fn is_init(&self) -> bool {
