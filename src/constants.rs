@@ -25,4 +25,6 @@ pub const TIME_WAIT_TIMEOUT: Duration = Duration::from_secs(1);
 // It's completely useless for that though.
 // And since Thread::sleep() already rounds up to the next best time we can wait,
 // we don't actually need this.
-pub const CLOCK_GRANULARITY: Duration = Duration::from_secs(0);
+pub const CLOCK_GRANULARITY: Duration = Duration::from_secs(2);
+
+pub const WND: u16 = 1000;

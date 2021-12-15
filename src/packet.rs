@@ -177,8 +177,8 @@ impl Packet {
         self.payload.to_vec()
     }
 
-    pub fn payload_size(&self) -> u32 {
-        self.payload.to_vec().len() as u32
+    pub fn payload_size(&self) -> usize {
+        self.payload.to_vec().len()
     }
 
     pub fn get_sequence_number(&self) -> u32 {
@@ -187,6 +187,14 @@ impl Packet {
 
     pub fn set_sequence_number(&mut self, seq_num: u32) {
         self.header.seq_number = seq_num;
+    }
+
+    pub fn set_arwnd(&mut self, arwnd: u16) {
+        self.header.arwnd = arwnd;
+    }
+
+    pub fn get_arwnd(&self) -> u16 {
+        self.header.arwnd
     }
 
     pub fn get_ack_number(&self) -> u32 {
