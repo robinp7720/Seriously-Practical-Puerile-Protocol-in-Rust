@@ -29,6 +29,7 @@ fn big_load_integration() {
 
     // keep main thread alive while test is running
     server.join();
+    client.join();
 }
 
 fn client(message: String) {
@@ -52,7 +53,8 @@ fn server(message: &[u8]) {
 
         if buf.len() >= message.len() {
             assert_eq!(&buf, message);
-            std::process::exit(0);
+
+            return;
         }
     }
 }

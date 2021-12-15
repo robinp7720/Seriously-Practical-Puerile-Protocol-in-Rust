@@ -30,13 +30,8 @@ fn client() {
     let message = String::from("Hello, world!");
     con.send(Vec::from(message.as_bytes()));
 
-    loop {
-        if con.can_recv() {
-            assert_eq!(message, String::from_utf8_lossy(&*con.recv().unwrap()));
-            con.close();
-            break;
-        }
-    }
+    assert_eq!(message, String::from_utf8_lossy(&*con.recv().unwrap()));
+    con.close();
 }
 
 fn server() {
@@ -45,11 +40,10 @@ fn server() {
     loop {
         let mut connection = socket.accept().unwrap();
 
-        thread::spawn(move || loop {
+        thread::spawn(move || {
             let data = connection.recv().unwrap();
             connection.send(data);
             connection.close();
-            break;
         });
     }
 }
