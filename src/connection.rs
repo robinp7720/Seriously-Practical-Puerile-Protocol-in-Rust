@@ -1,7 +1,5 @@
 use crate::connection_reliability_sender::ConnectionReliabilitySender;
-use crate::constants::{
-    MAX_PACKET_SIZE, MAX_PAYLOAD_SIZE, RETRANSMISSION_TIMEOUT, TIME_WAIT_TIMEOUT,
-};
+use crate::constants::{MAX_PACKET_SIZE, MAX_PAYLOAD_SIZE, TIME_WAIT_TIMEOUT};
 use crate::cookie::ConnectionCookie;
 use crate::packet::{Packet, PacketFlags, PrimaryHeader};
 use std::collections::{HashMap, VecDeque};
