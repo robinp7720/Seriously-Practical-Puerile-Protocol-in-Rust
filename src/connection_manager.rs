@@ -44,7 +44,7 @@ impl ConnectionManager {
                 let packet = match Packet::from_bytes(&buf[..amt]) {
                     Ok(packet) => packet,
                     Err(_) => {
-                        println!("Received a packet which couldn't be parsed");
+                        eprintln!("Received a packet which couldn't be parsed");
                         continue;
                     }
                 };
@@ -92,7 +92,7 @@ impl ConnectionManager {
                     connection
                         .lock()
                         .unwrap()
-                        .set_conncetion_id(packet.get_connection_id());
+                        .set_connection_id(packet.get_connection_id());
 
                     match connections
                         .lock()
@@ -100,10 +100,10 @@ impl ConnectionManager {
                         .try_insert(packet.get_connection_id(), connection)
                     {
                         Ok(_) => {
-                            println!("connection inserted into hashmap")
+                            eprintln!("connection inserted into hashmap")
                         }
                         Err(e) => {
-                            println!("Connection with same id already exists! The cookie echo was probably lost. We need to resend it. Letting the socket retransmission handle it");
+                            eprintln!("Connection with same id already exists! The cookie echo was probably lost. We need to resend it. Letting the socket retransmission handle it");
                         }
                     }
 
@@ -118,7 +118,7 @@ impl ConnectionManager {
                 let connection = connections.get(&packet.get_connection_id());
                 match connection {
                     None => {
-                        println!("We received data from a non existing connection. Ignoring");
+                        eprintln!("We received data from a non existing connection. Ignoring");
                         continue;
                     }
                     Some(connection) => {
@@ -138,17 +138,7 @@ impl ConnectionManager {
                     let mut connections = self.connections.lock().unwrap();
                     let connection = connections.get_mut(&connection_id).unwrap();
 
-                    println!(
-                        "before clone: {}",
-                        connection.lock().unwrap().packet_counter
-                    );
-
                     let cloned_connection = Arc::clone(&connection);
-
-                    println!(
-                        "after clone: {}",
-                        cloned_connection.lock().unwrap().packet_counter
-                    );
 
                     return cloned_connection;
                 }
@@ -183,6 +173,6 @@ impl ConnectionManager {
 
 impl Drop for ConnectionManager {
     fn drop(&mut self) {
-        println!("Connection manager dropped");
+        eprintln!("Connection manager dropped");
     }
 }

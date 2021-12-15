@@ -12,6 +12,8 @@ use connection::Connection;
 
 use crate::connection::ConnectionState;
 use crate::connection_manager::ConnectionManager;
+use crate::constants::MAX_PAYLOAD_SIZE;
+use crate::ConnectionState::CloseWait;
 use std::io::Error;
 use std::net::{ToSocketAddrs, UdpSocket};
 use std::sync::mpsc::{Receiver, TryRecvError};
@@ -32,8 +34,14 @@ impl SPPPConnection {
     ///
     ///  *   `payload` - payload supposed to be send as a vector of bytes
     pub fn send(&self, payload: Vec<u8>) {
+        while !self.can_send() {}
+
         let mut connection = self.connection.lock().unwrap();
         connection.send_data(payload);
+    }
+
+    pub fn can_send(&self) -> bool {
+        self.connection.lock().unwrap().can_send()
     }
 
     /// Public API call to receive data.
@@ -41,10 +49,13 @@ impl SPPPConnection {
     /// # Returns
     /// Returns a Result object containing a vector of payload bytes received or an error.
     pub fn recv(&mut self) -> Result<Vec<u8>, Error> {
-        self.read_channel_into_buffer();
+        self.read_all_into_buffer();
 
         if self.receive_buffer.len() == 0 {
-            return Ok(self.receive_channel.recv().unwrap());
+            let data = self.receive_channel.recv().unwrap();
+            let mut connection = self.connection.lock().unwrap();
+            connection.reset_channel_buffer_size();
+            return Ok(data);
         }
 
         let return_value = self.receive_buffer.clone();
@@ -52,12 +63,20 @@ impl SPPPConnection {
         Ok(return_value)
     }
 
-    fn read_channel_into_buffer(&mut self) {
+    fn read_all_into_buffer(&mut self) {
+        while self.read_single_into_buffer() {}
+        let mut connection = self.connection.lock().unwrap();
+        connection.reset_channel_buffer_size();
+        connection.update_external_buffer_size(self.receive_buffer.len());
+    }
+
+    fn read_single_into_buffer(&mut self) -> bool {
         match self.receive_channel.try_recv() {
             Ok(mut value) => {
                 self.receive_buffer.append(&mut value);
+                true
             }
-            Err(_) => {}
+            Err(_) => false,
         }
     }
 
@@ -66,7 +85,7 @@ impl SPPPConnection {
     /// # Returns
     /// Returns True if data is in the receive buffer or false otherwise.
     pub fn can_recv(&mut self) -> bool {
-        self.read_channel_into_buffer();
+        self.read_all_into_buffer();
         self.receive_buffer.len() > 0
     }
 
@@ -90,23 +109,27 @@ impl SPPPConnection {
     pub fn wait_for_close(&self) {
         // !ToDo: Change API calls so that they match the description. This should probably be wait.
         while !self.is_closed() {}
-        println!("done here");
+        eprintln!("done here");
     }
 
     /// Public API call initiate the closing of the connection.
     pub fn close(&self) {
-        println!("Waiting for everything to be sent");
+        eprintln!("Waiting for everything to be sent");
         self.wait_for_no_sending();
 
         {
-            println!("Send our intention to close the connection");
+            eprintln!("Send our intention to close the connection");
             self.connection.lock().unwrap().close();
         }
 
-        println!("We sent our intention to close. Wait for the connection to actually be closed");
+        eprintln!("We sent our intention to close. Wait for the connection to actually be closed");
         self.wait_for_close();
 
-        println!("Connection closed!");
+        eprintln!("Connection closed!");
+    }
+
+    pub fn client_closed(&self) -> bool {
+        self.connection.lock().unwrap().get_connection_state() == CloseWait
     }
 }
 
@@ -136,7 +159,7 @@ impl SPPPSocket {
             Some(port) => UdpSocket::bind(format!("0.0.0.0:{}", port)).unwrap(),
         };
 
-        println!("{}", socket.local_addr().unwrap().port());
+        eprintln!("{}", socket.local_addr().unwrap().port());
 
         let connection_manager = connection_manager::ConnectionManager::new(socket);
 
@@ -181,7 +204,7 @@ impl SPPPSocket {
         let receive_channel: Receiver<Vec<u8>> =
             { connection.lock().unwrap().register_receive_channel() };
 
-        println!("Waiting for connection to be established");
+        eprintln!("Waiting for connection to be established");
         while connection.lock().unwrap().get_connection_state() != ConnectionState::Established {}
 
         Ok(SPPPConnection {
@@ -194,7 +217,7 @@ impl SPPPSocket {
 
 impl Drop for SPPPSocket {
     fn drop(&mut self) {
-        println!("SPPPPPPPP socket dropped");
+        eprintln!("SPPPPPPPP socket dropped");
     }
 }
 

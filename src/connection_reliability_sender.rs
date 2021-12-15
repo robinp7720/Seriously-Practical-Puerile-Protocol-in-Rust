@@ -1,13 +1,16 @@
 use crate::connection::PacketRetransmit;
-use crate::constants::{CLOCK_GRANULARITY, RETRANSMISSION_TIMEOUT};
+use crate::constants::{
+    CLOCK_GRANULARITY, MAX_PACKET_SIZE, MAX_PAYLOAD_SIZE, RETRANSMISSION_TIMEOUT, WND,
+};
 use crate::packet::Packet;
 use std::cmp::{max, min};
 use std::collections::HashMap;
 use std::net::{SocketAddr, UdpSocket};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU16, AtomicU64, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread;
+use std::thread::JoinHandle;
 use std::time::{Duration, SystemTime};
 
 struct TimeoutPacket {
@@ -41,6 +44,15 @@ pub struct ConnectionReliabilitySender {
     rttvar: u128,
 
     curr_rto: Arc<AtomicU64>,
+
+    in_flight: Arc<AtomicU16>,
+
+    // Available receive window in packets
+    local_arwnd: Arc<AtomicU16>,
+    remote_arwnd: Arc<AtomicU16>,
+    flow_thread_handle: JoinHandle<u8>,
+    flow_sender_tx: Sender<Packet>,
+    queued_for_flight: Arc<AtomicU16>,
 }
 
 impl ConnectionReliabilitySender {
@@ -49,8 +61,14 @@ impl ConnectionReliabilitySender {
 
         let (sending_queue_tx, sending_queue_rx) = channel::<Packet>();
         let (in_transit_queue_tx, in_transit_queue_rx) = channel::<TimeoutPacket>();
+        let (flow_sender_tx, flow_sender_rx) = channel::<Packet>();
 
         let curr_rto = Arc::new(AtomicU64::new(RETRANSMISSION_TIMEOUT.as_millis() as u64));
+
+        let local_arwnd = Arc::new(AtomicU16::new(2));
+        let remote_arwnd = Arc::new(AtomicU16::new(2));
+        let in_flight = Arc::new(AtomicU16::new(0));
+        let queued_for_flight = Arc::new(AtomicU16::new(0));
 
         Self::start_send_thread(
             sending_queue_rx,
@@ -59,6 +77,7 @@ impl ConnectionReliabilitySender {
             addr.clone(),
             socket.try_clone().unwrap(),
             curr_rto.clone(),
+            local_arwnd.clone(),
         );
 
         Self::start_timeout_monitor_thread(
@@ -67,17 +86,60 @@ impl ConnectionReliabilitySender {
             in_transit.clone(),
         );
 
+        let flow_thread_handle = Self::start_flow_thread(
+            flow_sender_rx,
+            sending_queue_tx.clone(),
+            in_flight.clone(),
+            remote_arwnd.clone(),
+            queued_for_flight.clone(),
+        );
+
         ConnectionReliabilitySender {
             in_transit,
             in_transit_queue_tx,
             sending_queue_tx,
+
+            flow_sender_tx,
+
+            flow_thread_handle,
+
             socket,
             addr,
 
             srtt: 0,
             rttvar: 0,
             curr_rto,
+
+            in_flight,
+            queued_for_flight,
+
+            local_arwnd,
+            remote_arwnd,
         }
+    }
+
+    fn start_flow_thread(
+        flow_send_rx: Receiver<Packet>,
+        sending_queue_tx: Sender<Packet>,
+        in_flight: Arc<AtomicU16>,
+        remote_arwnd: Arc<AtomicU16>,
+        queued_for_flight: Arc<AtomicU16>,
+    ) -> JoinHandle<u8> {
+        thread::spawn(move || loop {
+            loop {
+                if remote_arwnd.load(Ordering::Relaxed) > in_flight.load(Ordering::Relaxed) {
+                    eprintln!("Adding a packet to the send queue");
+                    break;
+                }
+                thread::park();
+            }
+
+            let packet = flow_send_rx.recv().unwrap();
+
+            in_flight.fetch_add(1, Ordering::Relaxed);
+            queued_for_flight.fetch_sub(1, Ordering::Relaxed);
+            sending_queue_tx.send(packet);
+        })
     }
 
     fn start_send_thread(
@@ -87,10 +149,17 @@ impl ConnectionReliabilitySender {
         addr: SocketAddr,
         socket: UdpSocket,
         curr_rto: Arc<AtomicU64>,
+        arwnd: Arc<AtomicU16>,
     ) {
         thread::spawn(move || {
             loop {
-                let packet = sending_queue_rx.recv().unwrap();
+                let mut packet = sending_queue_rx.recv().unwrap();
+
+                thread::sleep(Duration::from_micros(50));
+
+                let arwnd = arwnd.load(Ordering::Relaxed);
+
+                packet.set_arwnd(arwnd);
 
                 match socket.send_to(&*packet.to_bytes(), addr) {
                     Ok(_) => {}
@@ -99,6 +168,7 @@ impl ConnectionReliabilitySender {
                         // failed on our end.
                         // But really it doesn't change that much.
                         // IF we failed to send a packet, we can just let the timeout handle it instead.
+                        eprintln!("Sending a packet to the UDP socket failed")
                     }
                 };
 
@@ -182,19 +252,47 @@ impl ConnectionReliabilitySender {
                 .unwrap();
 
             if !transit_status.arrived {
-                println!("Packet timed out: {:?}", current_timeout_packet.packet);
+                eprintln!("Timeout: {:?}", current_timeout_packet.packet);
                 sending_queue_tx.send(current_timeout_packet.packet);
             }
         });
     }
 
-    pub fn send_packet(&self, packet: Packet) {
-        self.sending_queue_tx.send(packet);
+    pub fn send_packet(&mut self, packet: Packet) {
+        eprintln!("Sending packet: {}", packet.get_sequence_number());
+
+        let remote_arwnd = self.remote_arwnd.load(Ordering::Relaxed) as u64;
+
+        eprintln!("rem arwnd locked");
+
+        let in_flight = self.in_flight.load(Ordering::Relaxed) as u64;
+
+        eprintln!("in flight locked");
+
+        let queued = self.queued_for_flight.load(Ordering::Relaxed) as u64;
+
+        eprintln!("queued locked");
+
+        eprintln!(
+            "Rem_arwnd: {}, in flight: {}, queued: {}",
+            remote_arwnd, in_flight, queued
+        );
+
+        if packet.is_ack() {
+            // Don't bother with flow control for ACKs
+            self.sending_queue_tx.send(packet);
+            return;
+        }
+
+        self.queued_for_flight.fetch_add(1, Ordering::Relaxed);
+        //self.in_flight.fetch_add(1, Ordering::Relaxed);
+
+        self.flow_sender_tx.send(packet);
     }
 
     /// Handle a received ack
     /// If a duplicate ack was received, returns true
-    pub fn handle_ack(&mut self, packet: &Packet) -> bool {
+    pub fn handle_ack(&mut self, packet: &Packet) {
         let mut packet_classification = PacketRetransmit::Data(packet.get_ack_number());
 
         if packet.is_init() {
@@ -209,7 +307,7 @@ impl ConnectionReliabilitySender {
             let mut in_transit_lock = self.in_transit.lock().unwrap();
 
             let transit_status = match in_transit_lock.get_mut(&packet_classification) {
-                None => return true,
+                None => return,
                 Some(transit_status) => transit_status,
             };
 
@@ -222,9 +320,8 @@ impl ConnectionReliabilitySender {
 
         if !duplicate {
             self.update_rtt(send_time);
+            self.in_flight.fetch_sub(1, Ordering::Relaxed);
         }
-
-        duplicate
     }
 
     fn update_rtt(&mut self, send_time: SystemTime) {
@@ -255,11 +352,42 @@ impl ConnectionReliabilitySender {
             (self.srtt + max(CLOCK_GRANULARITY.as_millis(), 4 * self.rttvar)) as u64,
             Ordering::Relaxed,
         );
+    }
 
-        println!(
-            "New RTO: {}, Current RTT: {}",
-            self.curr_rto.load(Ordering::Relaxed),
-            rtt
-        );
+    pub fn get_in_flight(&self) -> u32 {
+        (self.in_flight.load(Ordering::Relaxed) + self.queued_for_flight.load(Ordering::Relaxed))
+            as u32
+    }
+
+    pub fn get_arwnd(&self) -> u16 {
+        self.local_arwnd.load(Ordering::Relaxed)
+    }
+
+    pub fn update_local_arwnd(&self, buffer_size: usize) {
+        let mut new_arwnd = 0;
+
+        if WND as usize * MAX_PAYLOAD_SIZE >= buffer_size {
+            new_arwnd = (WND as usize * MAX_PAYLOAD_SIZE - buffer_size) / MAX_PAYLOAD_SIZE
+        }
+
+        self.local_arwnd.store(new_arwnd as u16, Ordering::Relaxed);
+    }
+
+    pub fn update_remote_arwnd(&mut self, arwnd: u16) {
+        self.remote_arwnd.store(arwnd, Ordering::Relaxed);
+        self.flow_thread_handle.thread().unpark();
+    }
+
+    pub fn can_send(&self) -> bool {
+        let remote_arwnd = self.remote_arwnd.load(Ordering::Relaxed) as u64;
+        let in_flight = self.in_flight.load(Ordering::Relaxed) as u64;
+        let queued = self.queued_for_flight.load(Ordering::Relaxed) as u64;
+
+        /*println!(
+            "Rem_arwnd: {}, in flight: {}, queued: {}",
+            remote_arwnd, in_flight, queued
+        );*/
+
+        return remote_arwnd > queued;
     }
 }

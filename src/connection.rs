@@ -1,5 +1,7 @@
 use crate::connection_reliability_sender::ConnectionReliabilitySender;
-use crate::constants::{MAX_PAYLOAD_SIZE, RETRANSMISSION_TIMEOUT, TIME_WAIT_TIMEOUT};
+use crate::constants::{
+    MAX_PACKET_SIZE, MAX_PAYLOAD_SIZE, RETRANSMISSION_TIMEOUT, TIME_WAIT_TIMEOUT,
+};
 use crate::cookie::ConnectionCookie;
 use crate::packet::{Packet, PacketFlags, PrimaryHeader};
 use std::collections::{HashMap, VecDeque};
@@ -42,10 +44,13 @@ pub struct Connection {
     current_send_sequence_number: u32,
     next_expected_sequence_number: u32,
 
-    pub packet_counter: u32,
     receive_channel: Option<Sender<Vec<u8>>>,
 
     reliable_sender: ConnectionReliabilitySender,
+
+    internal_buffer: usize,
+    external_buffer: usize,
+    channel_buffer: usize,
 }
 
 impl Connection {
@@ -69,8 +74,11 @@ impl Connection {
             cookie: None,
             current_send_sequence_number: 0,
             next_expected_sequence_number: 0,
-            packet_counter: 0,
             receive_channel: None,
+
+            internal_buffer: 0,
+            external_buffer: 0,
+            channel_buffer: 0,
         }
     }
 
@@ -92,17 +100,19 @@ impl Connection {
     }
 
     pub fn receive_packet(&mut self, packet: Packet) {
-        let mut packet_expected = true;
+        eprintln!("New arwnd: {}", packet.get_arwnd());
+        self.reliable_sender.update_remote_arwnd(packet.get_arwnd());
+        self.reliable_sender
+            .update_local_arwnd(self.total_buffer_size());
 
-        if packet.get_sequence_number() < self.next_expected_sequence_number {
-            packet_expected = false;
-        }
+        let mut packet_expected =
+            packet.get_sequence_number() >= self.next_expected_sequence_number;
 
         // HANDLE INIT ACK packets
         if packet.is_ack() && packet.is_init() {
             if packet.get_sequence_number() == self.next_expected_sequence_number {
                 self.next_expected_sequence_number =
-                    packet.get_sequence_number() + packet.payload_size();
+                    packet.get_sequence_number() + packet.payload_size() as u32;
             }
 
             self.handle_init_ack(&packet);
@@ -116,7 +126,7 @@ impl Connection {
         if packet.is_cookie() && !packet.is_ack() {
             if packet.get_sequence_number() == self.next_expected_sequence_number {
                 self.next_expected_sequence_number =
-                    packet.get_sequence_number() + packet.payload_size();
+                    packet.get_sequence_number() + packet.payload_size() as u32;
             }
 
             self.handle_cookie_echo(packet);
@@ -152,22 +162,30 @@ impl Connection {
         {
             if packet.get_sequence_number() == self.next_expected_sequence_number {
                 self.next_expected_sequence_number =
-                    packet.get_sequence_number() + packet.payload_size();
+                    packet.get_sequence_number() + packet.payload_size() as u32;
             }
 
-            self.send_ack(packet.get_sequence_number());
+            let seq_num = packet.get_sequence_number();
+
+            if packet_expected {
+                self.internal_buffer += packet.payload_size();
+            }
 
             if packet_expected {
                 self.insert_packet_incoming_queue(packet, packet_expected);
             }
+
+            self.send_ack(seq_num);
         }
     }
 
     pub fn insert_packet_incoming_queue(&mut self, packet: Packet, packet_expected: bool) {
         let mut incoming = self.incoming.lock().unwrap();
 
-        if packet_expected {
+        if packet.get_sequence_number() < self.next_expected_sequence_number {
             // send to packet to receive channel
+            self.channel_buffer += packet.payload_size();
+            self.internal_buffer -= packet.payload_size();
             self.receive_channel
                 .as_ref()
                 .unwrap()
@@ -175,13 +193,24 @@ impl Connection {
 
             let mut last_index = 0;
             let mut next_expected_sequence_number =
-                packet.get_sequence_number() + packet.payload_size();
+                packet.get_sequence_number() + packet.payload_size() as u32;
 
             for (index, current_packet) in incoming.iter().enumerate() {
                 // find following packet
                 if current_packet.get_sequence_number() == next_expected_sequence_number {
                     last_index = index;
-                    next_expected_sequence_number += current_packet.payload_size();
+                    next_expected_sequence_number += current_packet.payload_size() as u32;
+
+                    if self.internal_buffer > current_packet.payload_size() {
+                        self.internal_buffer -= current_packet.payload_size();
+                    } else {
+                        eprintln!(
+                            "A payload counting bug has occurred. Continuing because not critical"
+                        );
+                        //self.internal_buffer = 0;
+                    }
+                    self.channel_buffer += current_packet.payload_size();
+
                     self.receive_channel
                         .as_ref()
                         .unwrap()
@@ -199,7 +228,6 @@ impl Connection {
 
             return;
         }
-
         for (i, cur) in incoming.iter().enumerate() {
             if cur.get_sequence_number() > packet.get_sequence_number() {
                 incoming.insert(i, packet);
@@ -221,6 +249,7 @@ impl Connection {
     }
 
     fn set_connection_state(&self, state: ConnectionState) {
+        eprintln!("Going into state: {:?}", state);
         *self.connection_state.lock().unwrap() = state;
 
         if state == ConnectionState::TimeWait {
@@ -299,11 +328,12 @@ impl Connection {
     }
 
     pub fn handle_ack(&mut self, packet: &Packet) {
-        let duplicate = self.reliable_sender.handle_ack(packet);
-
-        if !duplicate {
-            self.decrement_packet_counter();
-        }
+        /*eprintln!(
+            "Handling ack for {}. New arwnd: {}",
+            packet.get_ack_number(),
+            packet.get_arwnd()
+        );*/
+        self.reliable_sender.handle_ack(packet);
 
         match self.get_connection_state() {
             ConnectionState::LastAck => self.set_connection_state(ConnectionState::Closed),
@@ -317,23 +347,11 @@ impl Connection {
         }
     }
 
-    fn increment_packet_counter(&mut self) {
-        self.packet_counter += 1;
-    }
-
-    fn decrement_packet_counter(&mut self) {
-        self.packet_counter -= 1;
-    }
-
     fn send_packet(&mut self, mut packet: Packet) {
         // Set the sequence number for the packet
         packet.set_sequence_number(self.current_send_sequence_number);
 
-        self.current_send_sequence_number += packet.payload_size();
-
-        if !packet.is_ack() {
-            self.increment_packet_counter();
-        }
+        self.current_send_sequence_number += packet.payload_size() as u32;
 
         self.reliable_sender.send_packet(packet);
     }
@@ -370,7 +388,8 @@ impl Connection {
         }
     }
 
-    pub fn create_packet_for_data(&self, payload: Vec<u8>) -> Packet {
+    fn create_packet_for_data(&self, payload: Vec<u8>) -> Packet {
+        eprintln!("Creating packet");
         let flags = PacketFlags::new(0);
 
         Packet::new(
@@ -466,6 +485,35 @@ impl Connection {
         }
     }
 
+    fn total_buffer_size(&self) -> usize {
+        self.external_buffer + self.channel_buffer + self.internal_buffer
+    }
+
+    pub fn update_external_buffer_size(&mut self, buffer_size: usize) {
+        self.external_buffer = buffer_size;
+
+        self.reliable_sender
+            .update_local_arwnd(self.total_buffer_size());
+
+        eprintln!(
+            "local buffer has changed: {}. Next expected seq: {}",
+            self.total_buffer_size(),
+            self.next_expected_sequence_number
+        );
+    }
+
+    pub fn reset_channel_buffer_size(&mut self) {
+        self.channel_buffer = 0;
+    }
+
+    pub fn get_in_flight(&self) -> u32 {
+        return self.reliable_sender.get_in_flight();
+    }
+
+    pub fn can_send(&self) -> bool {
+        self.reliable_sender.can_send()
+    }
+
     pub fn get_addr(&self) -> SocketAddr {
         self.addr
     }
@@ -474,12 +522,12 @@ impl Connection {
         self.connection_id
     }
 
-    pub fn set_conncetion_id(&mut self, connection_id: u32) {
+    pub fn set_connection_id(&mut self, connection_id: u32) {
         self.connection_id = connection_id;
     }
 
     pub fn connection_can_close(&self) -> bool {
-        self.packet_counter == 0
+        self.reliable_sender.get_in_flight() == 0
     }
 
     pub fn wait_for_last_ack(&self) {
@@ -497,7 +545,7 @@ impl Connection {
 
 impl Drop for Connection {
     fn drop(&mut self) {
-        println!("connection dropped");
+        eprintln!("connection dropped");
     }
 }
 
