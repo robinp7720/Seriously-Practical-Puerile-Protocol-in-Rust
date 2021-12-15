@@ -1,6 +1,7 @@
 use crate::connection::PacketRetransmit;
 use crate::constants::{
-    CLOCK_GRANULARITY, MAX_PACKET_SIZE, MAX_PAYLOAD_SIZE, RETRANSMISSION_TIMEOUT, WND,
+    CLOCK_GRANULARITY, INITIAL_RETRANSMISSION_TIMEOUT, MAX_PACKET_SIZE, MAX_PAYLOAD_SIZE,
+    RECEIVE_WINDOW_SIZE,
 };
 use crate::packet::Packet;
 use std::cmp::{max, min};
@@ -22,12 +23,6 @@ struct TimeoutPacket {
 struct TransitStatus {
     send_time: SystemTime,
     arrived: bool,
-}
-
-impl TimeoutPacket {
-    pub fn timed_out(&self) -> bool {
-        SystemTime::now().duration_since(self.send_time).unwrap() > RETRANSMISSION_TIMEOUT
-    }
 }
 
 pub struct ConnectionReliabilitySender {
@@ -63,7 +58,9 @@ impl ConnectionReliabilitySender {
         let (in_transit_queue_tx, in_transit_queue_rx) = channel::<TimeoutPacket>();
         let (flow_sender_tx, flow_sender_rx) = channel::<Packet>();
 
-        let curr_rto = Arc::new(AtomicU64::new(RETRANSMISSION_TIMEOUT.as_millis() as u64));
+        let curr_rto = Arc::new(AtomicU64::new(
+            INITIAL_RETRANSMISSION_TIMEOUT.as_millis() as u64
+        ));
 
         let local_arwnd = Arc::new(AtomicU16::new(2));
         let remote_arwnd = Arc::new(AtomicU16::new(2));
@@ -366,8 +363,9 @@ impl ConnectionReliabilitySender {
     pub fn update_local_arwnd(&self, buffer_size: usize) {
         let mut new_arwnd = 0;
 
-        if WND as usize * MAX_PAYLOAD_SIZE >= buffer_size {
-            new_arwnd = (WND as usize * MAX_PAYLOAD_SIZE - buffer_size) / MAX_PAYLOAD_SIZE
+        if RECEIVE_WINDOW_SIZE as usize * MAX_PAYLOAD_SIZE >= buffer_size {
+            new_arwnd =
+                (RECEIVE_WINDOW_SIZE as usize * MAX_PAYLOAD_SIZE - buffer_size) / MAX_PAYLOAD_SIZE
         }
 
         self.local_arwnd.store(new_arwnd as u16, Ordering::Relaxed);
