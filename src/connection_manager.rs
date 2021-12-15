@@ -87,7 +87,13 @@ impl ConnectionManager {
                 // SERVER SENDING CONNECTION ACKNOWLEDGEMENT to CLIENT
                 // Here we create the connection object on the client
                 if packet.is_init() && packet.is_ack() {
-                    let connection = connections.lock().unwrap().remove(&0).unwrap();
+                    let connection = match connections.lock().unwrap().remove(&0) {
+                        None => {
+                            eprintln!("We received an init ack but we don't have a connection waiting to be setup!");
+                            continue;
+                        }
+                        Some(connection) => connection,
+                    };
 
                     connection
                         .lock()
