@@ -175,6 +175,7 @@ impl Connection {
 
             self.send_ack(seq_num);
         }
+        eprintln!("packet handler finished");
     }
 
     pub fn insert_packet_incoming_queue(&mut self, packet: Packet, packet_expected: bool) {
@@ -326,12 +327,9 @@ impl Connection {
     }
 
     pub fn handle_ack(&mut self, packet: &Packet) {
-        /*eprintln!(
-            "Handling ack for {}. New arwnd: {}",
-            packet.get_ack_number(),
-            packet.get_arwnd()
-        );*/
+        eprintln!("Passing to reliable sender");
         self.reliable_sender.handle_ack(packet);
+        eprintln!("reliable sender finished");
 
         match self.get_connection_state() {
             ConnectionState::LastAck => self.set_connection_state(ConnectionState::Closed),
