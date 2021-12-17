@@ -240,16 +240,7 @@ impl ConnectionReliabilitySender {
                 // Don't bother checking if an ACK packet is still in transit
                 // This should handle cookie ACKs aswell since they dont have a payload and have
                 // the ack flag set.
-                if packet.is_ack() && packet.payload_size() == 0 {
-                    continue;
-                }
-
-                //We don't care if the cookie ack arrives
-                if packet.is_cookie() && packet.is_ack() {
-                    continue;
-                }
-
-                if packet.is_ack() && packet.is_init() {
+                if packet.is_ack() {
                     continue;
                 }
 
