@@ -196,7 +196,7 @@ impl ConnectionReliabilitySender {
 
             in_flight.fetch_add(1, Ordering::Relaxed);
             queued_for_flight.fetch_sub(1, Ordering::Relaxed);
-            println!(
+            eprintln!(
                 "Ack: {}, init: {}, cookie: {}, fin: {} ",
                 packet.is_ack(),
                 packet.is_init(),
@@ -219,8 +219,6 @@ impl ConnectionReliabilitySender {
         thread::spawn(move || {
             loop {
                 let mut packet = sending_queue_rx.recv().unwrap();
-
-                thread::sleep(Duration::from_micros(50));
 
                 let arwnd = arwnd.load(Ordering::Relaxed);
 
@@ -309,7 +307,6 @@ impl ConnectionReliabilitySender {
                 .unwrap();
 
             if !transit_status.arrived {
-                eprintln!("Timeout: {:?}", current_timeout_packet.packet);
                 sending_queue_tx.send(current_timeout_packet.packet);
                 congestion_handler.cwnd_packet_loss();
             }
@@ -317,19 +314,9 @@ impl ConnectionReliabilitySender {
     }
 
     pub fn send_packet(&mut self, packet: Packet) {
-        eprintln!("Sending packet: {}", packet.get_sequence_number());
-
         let remote_arwnd = self.remote_arwnd.load(Ordering::Relaxed) as u64;
-
-        eprintln!("rem arwnd locked");
-
         let in_flight = self.in_flight.load(Ordering::Relaxed) as u64;
-
-        eprintln!("in flight locked");
-
         let queued = self.queued_for_flight.load(Ordering::Relaxed) as u64;
-
-        eprintln!("queued locked");
 
         eprintln!(
             "Rem_arwnd: {}, in flight: {}, queued: {}",
@@ -343,7 +330,6 @@ impl ConnectionReliabilitySender {
         }
 
         self.queued_for_flight.fetch_add(1, Ordering::Relaxed);
-        //self.in_flight.fetch_add(1, Ordering::Relaxed);
 
         self.flow_sender_tx.send(packet);
     }
@@ -440,13 +426,12 @@ impl ConnectionReliabilitySender {
     }
 
     pub fn update_cwnd_ack(&mut self) {
-        println!("Updating cwnd! Phase");
         if self.congestion_handler.get_congestion_phase() == CongestionPhase::CongestionAvoidance {
-            println!("Congestion Avoidance");
+            eprintln!("Congestion Avoidance");
         } else {
-            println!("Fast Probing");
+            eprintln!("Fast Probing");
         }
-        println!(
+        eprintln!(
             "Old value: {}",
             self.congestion_handler.cwnd.load(Ordering::Relaxed)
         );
@@ -459,7 +444,7 @@ impl ConnectionReliabilitySender {
             self.congestion_handler
                 .increase_cwnd(((MAX_PACKET_SIZE * MAX_PACKET_SIZE) as u64) / curr_cwnd);
         }
-        println!("cwnd new value: {}", self.congestion_handler.get_cwnd());
+        eprintln!("cwnd new value: {}", self.congestion_handler.get_cwnd());
     }
 
     // Handle change in cwnd when loss is detected
