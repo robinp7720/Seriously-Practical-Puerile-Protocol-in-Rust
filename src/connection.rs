@@ -1,5 +1,5 @@
 use crate::connection_reliability_sender::ConnectionReliabilitySender;
-use crate::constants::{MAX_PACKET_SIZE, MAX_PAYLOAD_SIZE, TIME_WAIT_TIMEOUT};
+use crate::constants::{MAX_PACKET_SIZE, MAX_PAYLOAD_SIZE, RECEIVE_WINDOW_SIZE, TIME_WAIT_TIMEOUT};
 use crate::cookie::ConnectionCookie;
 use crate::packet::{Packet, PacketFlags, PrimaryHeader};
 use std::collections::{HashMap, VecDeque};
@@ -28,6 +28,7 @@ pub enum ConnectionState {
 pub enum PacketRetransmit {
     Init,
     CookieEcho,
+    ArwndUpdate(u32),
     Data(u32),
 }
 
@@ -98,7 +99,6 @@ impl Connection {
     }
 
     pub fn receive_packet(&mut self, packet: Packet) {
-        eprintln!("New arwnd: {}", packet.get_arwnd());
         self.reliable_sender.update_remote_arwnd(packet.get_arwnd());
         self.reliable_sender
             .update_local_arwnd(self.total_buffer_size());
@@ -146,6 +146,12 @@ impl Connection {
             return;
         }
 
+        if packet.is_arwnd() && !packet.is_ack() {
+            self.handle_arwnd_update(&packet);
+
+            return;
+        }
+
         // HANDLE DATA ACK packets
         if packet.is_ack() {
             self.handle_ack(&packet);
@@ -175,7 +181,6 @@ impl Connection {
 
             self.send_ack(seq_num);
         }
-        eprintln!("packet handler finished");
     }
 
     pub fn insert_packet_incoming_queue(&mut self, packet: Packet, packet_expected: bool) {
@@ -203,9 +208,6 @@ impl Connection {
                     if self.internal_buffer > current_packet.payload_size() {
                         self.internal_buffer -= current_packet.payload_size();
                     } else {
-                        eprintln!(
-                            "A payload counting bug has occurred. Continuing because not critical"
-                        );
                         //self.internal_buffer = 0;
                     }
                     self.channel_buffer += current_packet.payload_size();
@@ -327,9 +329,7 @@ impl Connection {
     }
 
     pub fn handle_ack(&mut self, packet: &Packet) {
-        eprintln!("Passing to reliable sender");
         self.reliable_sender.handle_ack(packet);
-        eprintln!("reliable sender finished");
 
         match self.get_connection_state() {
             ConnectionState::LastAck => self.set_connection_state(ConnectionState::Closed),
@@ -341,6 +341,32 @@ impl Connection {
             }
             _ => {}
         }
+    }
+
+    pub fn handle_arwnd_update(&mut self, packet: &Packet) {
+        // For an arwnd update packet, we only need to send an ack for the packet with the
+        // arwnd flag set
+
+        eprintln!("We recived arwnd update! Sending an arwnd update ack");
+
+        let mut flags = PacketFlags::new(0);
+        flags.ack = true;
+        flags.arwnd_update = true;
+
+        let packet = Packet::new(
+            PrimaryHeader::new(
+                self.connection_id,
+                self.current_send_sequence_number,
+                packet.get_sequence_number(),
+                0,
+                flags,
+            ),
+            None,
+            None,
+            vec![],
+        );
+
+        self.send_packet(packet);
     }
 
     fn send_packet(&mut self, mut packet: Packet) {
@@ -385,7 +411,6 @@ impl Connection {
     }
 
     fn create_packet_for_data(&self, payload: Vec<u8>) -> Packet {
-        eprintln!("Creating packet");
         let flags = PacketFlags::new(0);
 
         Packet::new(
@@ -457,6 +482,20 @@ impl Connection {
         self.send_packet(packet);
     }
 
+    pub fn send_arwnd_update(&mut self) {
+        let mut flags = PacketFlags::new(0);
+        flags.arwnd_update = true;
+
+        let packet = Packet::new(
+            PrimaryHeader::new(self.connection_id, 0, 0, 0, flags),
+            None,
+            None,
+            vec![],
+        );
+
+        self.send_packet(packet);
+    }
+
     pub fn send_fin(&mut self) {
         let mut flags = PacketFlags::new(0);
         flags.fin = true;
@@ -486,16 +525,31 @@ impl Connection {
     }
 
     pub fn update_external_buffer_size(&mut self, buffer_size: usize) {
+        let max_buffer_size = RECEIVE_WINDOW_SIZE as usize * MAX_PAYLOAD_SIZE;
+
+        let mut old_arwnd = 0;
+
+        if self.total_buffer_size() < max_buffer_size {
+            old_arwnd = max_buffer_size - self.total_buffer_size();
+        }
+
         self.external_buffer = buffer_size;
 
         self.reliable_sender
             .update_local_arwnd(self.total_buffer_size());
 
-        eprintln!(
-            "local buffer has changed: {}. Next expected seq: {}",
-            self.total_buffer_size(),
-            self.next_expected_sequence_number
-        );
+        let mut new_arwnd = 0;
+
+        if self.total_buffer_size() < max_buffer_size {
+            new_arwnd = max_buffer_size - self.total_buffer_size();
+        }
+
+        // If the total buffer size has changed by 5%,
+        // we are supposed to send an arwnd update.
+        // This is done to prevent a deadlock.
+        if (new_arwnd as f64 - old_arwnd as f64) / old_arwnd as f64 > 0.05 {
+            self.send_arwnd_update();
+        }
     }
 
     pub fn reset_channel_buffer_size(&mut self) {

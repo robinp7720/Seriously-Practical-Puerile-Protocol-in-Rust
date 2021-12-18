@@ -12,13 +12,13 @@ pub const MAX_PACKET_SIZE: usize = MAX_PAYLOAD_SIZE
     + MAX_ENCRYPTION_HEADER_SIZE;
 
 // The retransmission timeout to be used before an RTT can be completed
-pub const INITIAL_RETRANSMISSION_TIMEOUT: Duration = Duration::from_millis(100); // Timeout for retransmission in milliseconds
+pub const INITIAL_RETRANSMISSION_TIMEOUT: Duration = Duration::from_millis(2000); // Timeout for retransmission in milliseconds
 
 // According to the spec we would wait a whole 4 mins here.
 // This seams fairly naive. Since we already need to calculate the RTT,
 // a far better timeout period would be RTT + RETRANSMISSION_TIMEOUT.
 // This would be the maximum time it would take for the other peer to retransmit an ack if our fin was lost.
-pub const TIME_WAIT_TIMEOUT: Duration = Duration::from_secs(1);
+pub const TIME_WAIT_TIMEOUT: Duration = Duration::from_secs(240);
 
 // There is no explanation as to why this exists in the RFC.
 // According to Christopher Zeise, it's to make sure that the timeout for an ack is above

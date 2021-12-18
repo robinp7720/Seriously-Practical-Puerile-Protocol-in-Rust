@@ -66,6 +66,9 @@ pub struct PacketFlags {
     pub ack: bool,
     pub fin: bool,
     pub reset: bool,
+    pub sec: bool,
+    pub arwnd_update: bool,
+    pub reserved: bool,
 }
 
 impl PacketFlags {
@@ -76,6 +79,9 @@ impl PacketFlags {
             ack: i & 0b00100000 > 0,
             fin: i & 0b00010000 > 0,
             reset: i & 0b00001000 > 0,
+            sec: i & 0b00000100 > 0,
+            arwnd_update: i & 0b00000010 > 0,
+            reserved: i & 0b00000001 > 0,
         }
     }
 
@@ -96,6 +102,15 @@ impl PacketFlags {
         }
         if self.reset {
             out += 1 << 3
+        }
+        if self.sec {
+            out += 1 << 2
+        }
+        if self.arwnd_update {
+            out += 1 << 1
+        }
+        if self.reserved {
+            out += 1 << 0
         }
 
         out
@@ -234,4 +249,21 @@ impl Packet {
     pub fn is_fin(&self) -> bool {
         self.header.flags.fin
     }
+
+    pub fn is_arwnd(&self) -> bool {
+        self.header.flags.arwnd_update
+    }
+}
+
+#[cfg(test)]
+mod packet {
+    use crate::packet::{Packet, PacketFlags, PrimaryHeader};
+
+    #[test]
+    pub fn flag() {
+        assert_eq!(PacketFlags::new(0b11111111).to_bytes(), 0b11111111);
+    }
+
+    #[test]
+    pub fn test_to_bytes() {}
 }
