@@ -186,7 +186,6 @@ impl ConnectionReliabilitySender {
                         > ((in_flight.load(Ordering::Relaxed) as u64) * MAX_PACKET_SIZE as u64)
                             + MAX_PACKET_SIZE as u64
                 {
-                    eprintln!("Adding a packet to the send queue");
                     break;
                 }
                 thread::park();
@@ -196,13 +195,7 @@ impl ConnectionReliabilitySender {
 
             in_flight.fetch_add(1, Ordering::Relaxed);
             queued_for_flight.fetch_sub(1, Ordering::Relaxed);
-            eprintln!(
-                "Ack: {}, init: {}, cookie: {}, fin: {} ",
-                packet.is_ack(),
-                packet.is_init(),
-                packet.is_cookie(),
-                packet.is_fin()
-            );
+
             sending_queue_tx.send(packet);
         })
     }
@@ -251,6 +244,9 @@ impl ConnectionReliabilitySender {
                     packet_classification = PacketRetransmit::Init;
                 } else if packet.is_cookie() {
                     packet_classification = PacketRetransmit::CookieEcho;
+                } else if packet.is_arwnd() {
+                    packet_classification =
+                        PacketRetransmit::ArwndUpdate(packet.get_sequence_number());
                 }
 
                 let send_time = SystemTime::now();
@@ -300,11 +296,16 @@ impl ConnectionReliabilitySender {
                 packet_classification = PacketRetransmit::CookieEcho;
             }
 
-            let transit_status = in_transit
-                .lock()
-                .unwrap()
-                .remove(&packet_classification)
-                .unwrap();
+            if current_timeout_packet.packet.is_arwnd() {
+                packet_classification = PacketRetransmit::ArwndUpdate(
+                    current_timeout_packet.packet.get_sequence_number(),
+                );
+            }
+
+            let transit_status = match in_transit.lock().unwrap().remove(&packet_classification) {
+                None => continue,
+                Some(status) => status,
+            };
 
             if !transit_status.arrived {
                 sending_queue_tx.send(current_timeout_packet.packet);
@@ -314,16 +315,7 @@ impl ConnectionReliabilitySender {
     }
 
     pub fn send_packet(&mut self, packet: Packet) {
-        let remote_arwnd = self.remote_arwnd.load(Ordering::Relaxed) as u64;
-        let in_flight = self.in_flight.load(Ordering::Relaxed) as u64;
-        let queued = self.queued_for_flight.load(Ordering::Relaxed) as u64;
-
-        eprintln!(
-            "Rem_arwnd: {}, in flight: {}, queued: {}",
-            remote_arwnd, in_flight, queued
-        );
-
-        if packet.is_ack() {
+        if packet.is_ack() || packet.is_arwnd() {
             // Don't bother with flow control for ACKs
             self.sending_queue_tx.send(packet);
             return;
@@ -347,6 +339,10 @@ impl ConnectionReliabilitySender {
             packet_classification = PacketRetransmit::CookieEcho;
         }
 
+        if packet.is_arwnd() {
+            packet_classification = PacketRetransmit::ArwndUpdate(packet.get_sequence_number());
+        }
+
         let (duplicate, send_time) = {
             let mut in_transit_lock = self.in_transit.lock().unwrap();
 
@@ -365,7 +361,10 @@ impl ConnectionReliabilitySender {
         if !duplicate {
             self.update_rtt(send_time);
             self.update_cwnd_ack();
-            self.in_flight.fetch_sub(1, Ordering::Relaxed);
+
+            if !packet.is_arwnd() {
+                self.in_flight.fetch_sub(1, Ordering::Relaxed);
+            }
         }
     }
 
@@ -426,15 +425,6 @@ impl ConnectionReliabilitySender {
     }
 
     pub fn update_cwnd_ack(&mut self) {
-        if self.congestion_handler.get_congestion_phase() == CongestionPhase::CongestionAvoidance {
-            eprintln!("Congestion Avoidance");
-        } else {
-            eprintln!("Fast Probing");
-        }
-        eprintln!(
-            "Old value: {}",
-            self.congestion_handler.cwnd.load(Ordering::Relaxed)
-        );
         if self.congestion_handler.get_congestion_phase() == CongestionPhase::FastProbing {
             self.congestion_handler
                 .increase_cwnd(MAX_PACKET_SIZE as u64);
@@ -444,7 +434,6 @@ impl ConnectionReliabilitySender {
             self.congestion_handler
                 .increase_cwnd(((MAX_PACKET_SIZE * MAX_PACKET_SIZE) as u64) / curr_cwnd);
         }
-        eprintln!("cwnd new value: {}", self.congestion_handler.get_cwnd());
     }
 
     // Handle change in cwnd when loss is detected
