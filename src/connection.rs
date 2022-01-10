@@ -1,7 +1,9 @@
 use crate::connection_reliability_sender::ConnectionReliabilitySender;
+use crate::connection_security::Security;
 use crate::constants::{MAX_PACKET_SIZE, MAX_PAYLOAD_SIZE, RECEIVE_WINDOW_SIZE, TIME_WAIT_TIMEOUT};
 use crate::cookie::ConnectionCookie;
-use crate::packet::{Packet, PacketFlags, PrimaryHeader};
+use crate::packet::{Packet, PacketFlags, PrimaryHeader, SignatureHeader};
+use crate::SecurityState;
 use std::collections::{HashMap, VecDeque};
 use std::net::{SocketAddr, UdpSocket};
 use std::sync::mpsc::{channel, Receiver, Sender};
@@ -47,9 +49,13 @@ pub struct Connection {
 
     reliable_sender: ConnectionReliabilitySender,
 
+    pub security: Security,
+
     internal_buffer: usize,
     external_buffer: usize,
     channel_buffer: usize,
+
+    is_client: Option<bool>,
 }
 
 impl Connection {
@@ -64,6 +70,7 @@ impl Connection {
                 addr.clone(),
                 socket.try_clone().unwrap(),
             ),
+            security: Security::new(),
             addr,
             connection_id,
             socket,
@@ -78,6 +85,8 @@ impl Connection {
             internal_buffer: 0,
             external_buffer: 0,
             channel_buffer: 0,
+
+            is_client: None,
         }
     }
 
@@ -85,6 +94,14 @@ impl Connection {
         let (send, receive_channel) = channel::<Vec<u8>>();
         self.receive_channel = Some(send);
         return receive_channel;
+    }
+
+    pub fn is_client(&self) -> Option<bool> {
+        self.is_client
+    }
+
+    pub fn set_is_client(&mut self, is_client: Option<bool>) {
+        self.is_client = is_client
     }
 
     pub fn start_receive_thread(&self) {}
@@ -98,7 +115,7 @@ impl Connection {
         true
     }
 
-    pub fn receive_packet(&mut self, packet: Packet) {
+    pub fn receive_packet(&mut self, mut packet: Packet) {
         self.reliable_sender.update_remote_arwnd(packet.get_arwnd());
         self.reliable_sender
             .update_local_arwnd(self.total_buffer_size());
@@ -157,6 +174,12 @@ impl Connection {
             self.handle_ack(&packet);
         }
 
+        if packet.is_sec() {
+            self.handle_sec_packet(&packet);
+
+            return;
+        }
+
         let connection_state = self.get_connection_state();
 
         // ignore packets when not in established phase
@@ -164,12 +187,12 @@ impl Connection {
             && connection_state != ConnectionState::CookieWait
             && connection_state != ConnectionState::CookieEchoed
         {
+            let seq_num = packet.get_sequence_number();
+
             if packet.get_sequence_number() == self.next_expected_sequence_number {
                 self.next_expected_sequence_number =
                     packet.get_sequence_number() + packet.payload_size() as u32;
             }
-
-            let seq_num = packet.get_sequence_number();
 
             if packet_expected {
                 self.internal_buffer += packet.payload_size();
@@ -190,10 +213,20 @@ impl Connection {
             // send to packet to receive channel
             self.channel_buffer += packet.payload_size();
             self.internal_buffer -= packet.payload_size();
+
+            let decrypted_payload = match self.security.decrypt_bytes(
+                packet.get_payload(),
+                packet.get_signature().unwrap(),
+                self.is_client().unwrap(),
+            ) {
+                Ok(payload) => payload,
+                Err(e) => panic!("{}", e),
+            };
+
             self.receive_channel
                 .as_ref()
                 .unwrap()
-                .send(packet.get_payload());
+                .send(decrypted_payload);
 
             let mut last_index = 0;
             let mut next_expected_sequence_number =
@@ -212,10 +245,19 @@ impl Connection {
                     }
                     self.channel_buffer += current_packet.payload_size();
 
+                    let decrypted_payload = match self.security.decrypt_bytes(
+                        packet.get_payload(),
+                        packet.get_signature().unwrap(),
+                        self.is_client().unwrap(),
+                    ) {
+                        Ok(payload) => payload,
+                        Err(e) => panic!("{}", e),
+                    };
+
                     self.receive_channel
                         .as_ref()
                         .unwrap()
-                        .send(current_packet.get_payload());
+                        .send(decrypted_payload);
                 }
             }
 
@@ -260,6 +302,69 @@ impl Connection {
 
     pub fn get_connection_state(&self) -> ConnectionState {
         *self.connection_state.lock().unwrap()
+    }
+
+    fn handle_sec_packet(&mut self, packet: &Packet) {
+        if packet.encryption_header.is_some() {
+            self.send_ack(packet.get_sequence_number());
+
+            self.next_expected_sequence_number = packet.get_sequence_number() + 1;
+
+            match self.security.check_certificate(packet.get_payload()) {
+                Ok(_) => {}
+                Err(error) => {
+                    eprintln!("Certificate error: {:?}", error);
+                    return;
+                }
+            }
+
+            println!("The connection authenticity was checked successfully!");
+
+            if !self.is_client().unwrap() {
+                Security::agree_on_algorithms_server(
+                    self,
+                    packet.encryption_header.as_ref().unwrap(),
+                );
+            } else {
+                let header = packet.encryption_header.as_ref().unwrap();
+                self.security.set_algorithms(
+                    header.supported_encryption_algorithms[0],
+                    header.supported_signature_algorithms[0],
+                )
+            }
+
+            return;
+        }
+
+        match self.security.state {
+            SecurityState::ExchangeAlgorithms => { /* ignore packages in this state */ }
+            SecurityState::ExchangeKeys => {
+                // TODO handle congestion etc.?
+
+                self.next_expected_sequence_number = packet.get_sequence_number() + 1;
+
+                match packet.get_signature() {
+                    None => panic!("The receive DH packet has no signature header!"),
+                    Some(sig) => self
+                        .security
+                        .rsa_verify_signature(packet.get_payload(), sig),
+                }
+
+                if self.is_client().unwrap() {
+                    self.security.end_exchange_keys_client(packet.get_payload());
+                } else {
+                    let mut packet = self.security.exchange_keys_server(packet.get_payload());
+                    packet.set_connection_id(self.connection_id);
+                    self.send_encryption_packet(packet);
+                }
+
+                let sec_num = packet.get_sequence_number();
+                self.send_ack(sec_num);
+            }
+            SecurityState::Secured => {
+                todo!("Handle change symmetric key")
+            }
+        }
     }
 
     pub fn handle_init_ack(&mut self, packet: &Packet) {
@@ -373,7 +478,30 @@ impl Connection {
         // Set the sequence number for the packet
         packet.set_sequence_number(self.current_send_sequence_number);
 
+        let (enc_payload, signature) = self
+            .security
+            .encrypt_bytes(packet.get_payload(), self.is_client().unwrap());
+
+        // encrypt payload
+        packet.set_encrypted_payload(Some(enc_payload));
+        packet.push_encryption_to_payload();
+
+        if signature.len() > 0 {
+            packet.set_signature_header(SignatureHeader::new(signature));
+        }
+
         self.current_send_sequence_number += packet.payload_size() as u32;
+
+        self.reliable_sender.send_packet(packet);
+    }
+
+    pub fn send_encryption_packet(&mut self, mut packet: Packet) {
+        packet.set_sequence_number(self.current_send_sequence_number);
+
+        // This is defined by the RFC!
+        self.current_send_sequence_number += 1;
+
+        packet.set_sec(true);
 
         self.reliable_sender.send_packet(packet);
     }

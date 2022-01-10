@@ -6,4 +6,13 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-rand = "0.7.3"
+rand = "0.8"
+num-bigint = { version = "0.4", features = ["rand"] }
+hex-literal = "0.3.4"
+sha3 = "0.10.0"
+hkdf = "0.12.0"
+hmac = "0.12.0"
+aes = { version = "0.7.5", features = ["ctr"] }
+cipher = "0.3.0"
+lazy_static = "1.4.0"
+openssl = "0.10.38"

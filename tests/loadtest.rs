@@ -67,7 +67,7 @@ fn generate_long_random_string(length: usize) -> String {
 
     let long_string: String = (0..length)
         .map(|_| {
-            let idx = rng.gen_range(0, CHARSET.len());
+            let idx = rng.gen_range(0..CHARSET.len());
             CHARSET[idx] as char
         })
         .collect();
