@@ -17,6 +17,10 @@ tests:
   tags:
     - privileged
   script:
+    - apt-get update
+    - apt-get install libssl-dev -y
+    - mv -f ./certificates/DO_NOT_USE.key ./certificates/server.key
+    - mv -f ./certificates/DO_NOT_USE.crt ./certificates/server.crt
     - cargo test
 
 network_test:
@@ -26,7 +30,9 @@ network_test:
     - privileged
   script:
     - apt-get update
-    - apt-get install iproute2 -y
+    - apt-get install iproute2 libssl-dev -y
+    - mv -f ./certificates/DO_NOT_USE.key ./certificates/server.key
+    - mv -f ./certificates/DO_NOT_USE.crt ./certificates/server.crt
     - chmod +x ./tests/realistic_network/configure_interface.sh
     - ./tests/realistic_network/configure_interface.sh
     - cargo test --release

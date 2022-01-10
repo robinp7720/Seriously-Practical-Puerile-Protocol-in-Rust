@@ -11,7 +11,7 @@ fn main() {
     let handle = thread::spawn(move || loop {
         let data = connection.recv().unwrap();
 
-        println!("{:?}", data);
+        println!("New Data: {:?}", data);
 
         if data == vec![0, 0, 1] {
             return;

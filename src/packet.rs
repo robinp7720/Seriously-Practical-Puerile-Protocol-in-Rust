@@ -1,3 +1,4 @@
+use crate::connection_security::{EncryptionType, SignatureType};
 use std::io::Error;
 
 #[derive(Debug)]
@@ -33,12 +34,12 @@ impl PrimaryHeader {
         bytes.extend_from_slice(&self.ack_number.to_be_bytes());
         bytes.extend_from_slice(&self.arwnd.to_be_bytes());
         bytes.extend_from_slice(&[self.flags.to_bytes()]);
-        bytes.extend_from_slice(&[0 as u8]);
         bytes
     }
 
     fn from_bytes(bytes: &[u8]) -> Result<Self, &str> {
-        if bytes.len() != 16 {
+        if bytes.len() != 15 {
+            // (next header not managed by this function)
             return Err("header doesn't have a valid length");
         }
 
@@ -47,7 +48,6 @@ impl PrimaryHeader {
         let ack_number: u32 = u32::from_be_bytes([bytes[8], bytes[9], bytes[10], bytes[11]]);
         let arwnd: u16 = u16::from_be_bytes([bytes[12], bytes[13]]);
         let flags = PacketFlags::new(bytes[14]);
-        let _next_header: u8 = bytes[15];
 
         Ok(PrimaryHeader::new(
             connection_id,
@@ -118,39 +118,105 @@ impl PacketFlags {
 }
 #[derive(Debug)]
 pub struct EncryptionHeader {
-    pub number_supported_encryption: u8,
+    pub supported_encryption_algorithms: Vec<EncryptionType>,
+    pub supported_signature_algorithms: Vec<SignatureType>,
 }
 
 impl EncryptionHeader {
     pub fn to_bytes(&self) -> Vec<u8> {
-        todo!();
+        let mut out = vec![];
+
+        out.push(1); // next header
+        out.push(self.supported_encryption_algorithms.len() as u8);
+        out.push(self.supported_signature_algorithms.len() as u8);
+
+        for algo in &self.supported_encryption_algorithms {
+            out.push(match algo {
+                EncryptionType::AES256counter => 1,
+            });
+        }
+
+        for algo in &self.supported_signature_algorithms {
+            out.push(match algo {
+                SignatureType::SHA3_256 => 1,
+            });
+        }
+
+        out
     }
-    pub fn from_bytes(bytes: &[u8]) -> Result<Self, &str> {
-        todo!();
+    pub fn from_bytes(bytes: &[u8]) -> Self {
+        let number_encryption = bytes[0];
+        let number_signature = bytes[1];
+
+        let mut header = EncryptionHeader {
+            supported_signature_algorithms: vec![],
+            supported_encryption_algorithms: vec![],
+        };
+
+        if number_encryption == 0 {
+            return header;
+        }
+        for i in 2..number_encryption + 2 {
+            match bytes[i as usize] {
+                1 => header
+                    .supported_encryption_algorithms
+                    .push(EncryptionType::AES256counter),
+                x => {
+                    panic!("The encryption type {} is not known!", x)
+                }
+            }
+        }
+
+        for i in number_encryption + 1..bytes.len() as u8 {
+            match bytes[i as usize] {
+                1 => header
+                    .supported_signature_algorithms
+                    .push(SignatureType::SHA3_256),
+                x => {
+                    panic!("The signature type {} is not known!", x)
+                }
+            }
+        }
+
+        header
     }
 }
 
 #[derive(Debug)]
 pub struct SignatureHeader {
-    pub length: u16,
     pub signature: Vec<u8>,
 }
 
 impl SignatureHeader {
     pub fn to_bytes(&self) -> Vec<u8> {
-        todo!();
+        let mut out = vec![];
+
+        out.push(2);
+        out.extend_from_slice(&(self.signature.len() as u16).to_be_bytes());
+
+        out.extend_from_slice(&self.signature);
+
+        out
     }
-    pub fn from_bytes(bytes: &[u8]) -> Result<Self, &str> {
-        todo!();
+
+    pub fn from_bytes(bytes: &[u8]) -> Self {
+        SignatureHeader {
+            signature: bytes[2..].to_vec(), // ignore the length field here
+        }
+    }
+
+    pub fn new(signature: Vec<u8>) -> SignatureHeader {
+        SignatureHeader { signature }
     }
 }
 
 #[derive(Debug)]
 pub struct Packet {
     header: PrimaryHeader,
-    encryption_header: Option<EncryptionHeader>,
-    signature_header: Option<SignatureHeader>,
+    pub encryption_header: Option<EncryptionHeader>,
+    pub signature_header: Option<SignatureHeader>,
     payload: Vec<u8>,
+    encrypted_payload: Option<Vec<u8>>,
 }
 
 impl Packet {
@@ -165,6 +231,7 @@ impl Packet {
             encryption_header,
             signature_header,
             payload,
+            encrypted_payload: None,
         }
     }
 
@@ -180,12 +247,21 @@ impl Packet {
             out.extend_from_slice(&signature_header.to_bytes());
         }
 
+        out.push(0); // next header
+
         out.extend_from_slice(&self.payload);
         out
     }
 
     pub fn get_connection_id(&self) -> u32 {
         self.header.connection_id
+    }
+
+    pub fn get_encrypted_payload(&self) -> Option<Vec<u8>> {
+        match &self.encrypted_payload {
+            None => None,
+            Some(payload) => Some(payload.to_vec()),
+        }
     }
 
     pub fn get_payload(&self) -> Vec<u8> {
@@ -198,6 +274,13 @@ impl Packet {
 
     pub fn get_sequence_number(&self) -> u32 {
         self.header.seq_number
+    }
+
+    pub fn get_signature(&self) -> Option<Vec<u8>> {
+        match &self.signature_header {
+            None => None,
+            Some(header) => Some(header.signature.to_vec()),
+        }
     }
 
     pub fn set_sequence_number(&mut self, seq_num: u32) {
@@ -216,21 +299,86 @@ impl Packet {
         self.header.ack_number
     }
 
+    pub fn set_encryption_header(&mut self, header: EncryptionHeader) {
+        self.encryption_header = Some(header);
+    }
+
+    pub fn set_signature_header(&mut self, header: SignatureHeader) {
+        self.signature_header = Some(header);
+    }
+
+    pub fn set_connection_id(&mut self, id: u32) {
+        self.header.connection_id = id;
+    }
+
+    pub fn set_payload(&mut self, payload: Vec<u8>) {
+        self.payload = payload;
+    }
+
+    pub fn set_encrypted_payload(&mut self, payload: Option<Vec<u8>>) {
+        self.encrypted_payload = payload;
+    }
+
+    pub fn push_encryption_to_payload(&mut self) {
+        match &self.encrypted_payload {
+            None => {}
+            Some(payload) => self.payload = payload.to_vec(),
+        }
+    }
+
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, &str> {
         if bytes.len() < 16 {
             return Err("Packet length is invalid");
         }
 
-        let header = match PrimaryHeader::from_bytes(&bytes[..16]) {
+        let header = match PrimaryHeader::from_bytes(&bytes[..15]) {
             Ok(header) => header,
             Err(e) => return Err(e),
         };
 
+        let mut encryption_header: Option<EncryptionHeader> = None;
+        let mut signature_header: Option<SignatureHeader> = None;
+
+        let mut next_header_index = 15;
+        while bytes[next_header_index] != 0 {
+            match bytes[next_header_index] {
+                1 => {
+                    // calculate encryption header length
+                    let length = (bytes[next_header_index + 1] as u16
+                        + bytes[next_header_index + 2] as u16)
+                        as usize;
+
+                    encryption_header = Some(EncryptionHeader::from_bytes(
+                        &bytes[next_header_index + 1..next_header_index + 1 + 2 + length],
+                    ));
+
+                    // update the next header field
+                    next_header_index += 2 + length + 1;
+                }
+                2 => {
+                    // calculate signature header length
+                    let length = u16::from_be_bytes([
+                        bytes[next_header_index + 1],
+                        bytes[next_header_index + 2],
+                    ]) as usize;
+
+                    signature_header = Some(SignatureHeader::from_bytes(
+                        &bytes[next_header_index + 1..next_header_index + 1 + 2 + length],
+                    ));
+
+                    // update the next header field
+                    next_header_index += 2 + length + 1;
+                }
+                _ => return Err("This next header id is reserved!"),
+            }
+        }
+
         Ok(Packet {
             header,
-            payload: bytes[16..].to_vec(),
-            encryption_header: None,
-            signature_header: None,
+            payload: bytes[next_header_index + 1..].to_vec(),
+            encryption_header,
+            signature_header,
+            encrypted_payload: None,
         })
     }
 
@@ -252,6 +400,14 @@ impl Packet {
 
     pub fn is_arwnd(&self) -> bool {
         self.header.flags.arwnd_update
+    }
+
+    pub fn is_sec(&self) -> bool {
+        self.header.flags.sec
+    }
+
+    pub fn set_sec(&mut self, sec: bool) {
+        self.header.flags.sec = sec;
     }
 }
 

@@ -1,5 +1,6 @@
 /target
-
+/certificates/*.key
+!/certificates/DO_NOT_USE.key
 
 # Added by cargo
 #

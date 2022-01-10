@@ -1,9 +1,13 @@
 #![feature(hash_drain_filter)]
 #![feature(map_try_insert)]
+#[macro_use]
+extern crate hex_literal;
+extern crate lazy_static;
 
 mod connection;
 mod connection_manager;
 mod connection_reliability_sender;
+mod connection_security;
 mod constants;
 mod cookie;
 mod packet;
@@ -12,12 +16,15 @@ use connection::Connection;
 
 use crate::connection::ConnectionState;
 use crate::connection_manager::ConnectionManager;
+use crate::connection_security::{Security, SecurityState};
 use crate::constants::MAX_PAYLOAD_SIZE;
 use crate::ConnectionState::CloseWait;
 use std::io::Error;
 use std::net::{ToSocketAddrs, UdpSocket};
 use std::sync::mpsc::{Receiver, TryRecvError};
 use std::sync::{Arc, Mutex};
+use std::thread;
+use std::time::Duration;
 
 /// SPPP Connection object handling one connection to a peer or server.
 /// This object is returned to the program SPPPSocket::accept, SPPPSocket::listen.
@@ -57,7 +64,6 @@ impl SPPPConnection {
             connection.reset_channel_buffer_size();
             return Ok(data);
         }
-
         let return_value = self.receive_buffer.clone();
         self.receive_buffer.clear();
         Ok(return_value)
@@ -179,10 +185,45 @@ impl SPPPSocket {
     /// Returns the SPPPConnection object over which data can be sent and received.
     pub fn accept(&self) -> Result<SPPPConnection, Error> {
         let connection = self.connection_manager.accept();
+
         let receive_channel: Receiver<Vec<u8>> =
             { connection.lock().unwrap().register_receive_channel() };
 
         while connection.lock().unwrap().get_connection_state() != ConnectionState::Established {}
+
+        // wait till agree on algorithms is completed
+        loop {
+            {
+                if connection.lock().unwrap().security.algos_set() {
+                    break;
+                }
+            }
+            // TODO update this to a channel
+            thread::sleep(Duration::from_millis(100));
+        }
+
+        println!("Start DH");
+
+        {
+            connection.lock().unwrap().security.state = SecurityState::ExchangeKeys;
+        }
+
+        // wait till master secret is set
+        loop {
+            {
+                if connection.lock().unwrap().security.master_secret_set() {
+                    break;
+                }
+            }
+            // TODO update this to a channel
+            thread::sleep(Duration::from_millis(100));
+        }
+
+        {
+            connection.lock().unwrap().security.state = SecurityState::Secured;
+        }
+
+        println!("Connected");
 
         Ok(SPPPConnection {
             connection,
@@ -201,11 +242,58 @@ impl SPPPSocket {
     /// Returns the SPPPConnection object over which data can be sent and received.
     pub fn connect<A: ToSocketAddrs>(&mut self, addr: A) -> Result<SPPPConnection, Error> {
         let connection = self.connection_manager.connect(addr)?;
+
         let receive_channel: Receiver<Vec<u8>> =
             { connection.lock().unwrap().register_receive_channel() };
 
         eprintln!("Waiting for connection to be established");
         while connection.lock().unwrap().get_connection_state() != ConnectionState::Established {}
+
+        println!("Starting security");
+        // At this point the connection is established and we need to
+        {
+            Security::agree_on_algorithms_client(&mut connection.lock().unwrap());
+        }
+
+        // wait till agree on algorithms is completed
+        loop {
+            {
+                if connection.lock().unwrap().security.algos_set() {
+                    break;
+                }
+            }
+            // TODO update this to a channel
+            thread::sleep(Duration::from_millis(100));
+        }
+
+        // TODO certificates
+
+        println!("Start DH");
+
+        {
+            let mut connection = connection.lock().unwrap();
+            connection.security.state = SecurityState::ExchangeKeys;
+            let mut dh_packet = connection.security.start_exchange_keys_client();
+            dh_packet.set_connection_id(connection.get_connection_id());
+            connection.send_encryption_packet(dh_packet);
+        }
+
+        // wait till master secret is set
+        loop {
+            {
+                if connection.lock().unwrap().security.master_secret_set() {
+                    break;
+                }
+            }
+            // TODO update this to a channel
+            thread::sleep(Duration::from_millis(100));
+        }
+
+        {
+            connection.lock().unwrap().security.state = SecurityState::Secured;
+        }
+
+        println!("Connected");
 
         Ok(SPPPConnection {
             connection,
