@@ -265,5 +265,62 @@ mod packet {
     }
 
     #[test]
-    pub fn test_to_bytes() {}
+    pub fn test_from_bytes() {
+        let data: Vec<u8> = vec![
+            0u8, 0u8, 0u8, 1u8, 0u8, 0u8, 0u8, 2u8, 0u8, 0u8, 0u8, 3u8, 0u8, 4u8, 0b10110110, 0u8,
+            'H' as u8, 'e' as u8, 'l' as u8, 'l' as u8, 'o' as u8, ' ' as u8, 'W' as u8, 'o' as u8,
+            'r' as u8, 'l' as u8, 'd' as u8, '!' as u8,
+        ];
+
+        let packet = Packet::from_bytes(&data).unwrap();
+
+        assert_eq!(packet.header.connection_id, 1u32);
+        assert_eq!(packet.header.seq_number, 2u32);
+        assert_eq!(packet.header.ack_number, 3u32);
+        assert_eq!(packet.header.arwnd, 4u16);
+        assert_eq!(packet.header.flags.init, true);
+        assert_eq!(packet.header.flags.cookie, false);
+        assert_eq!(packet.header.flags.ack, true);
+        assert_eq!(packet.header.flags.fin, true);
+        assert_eq!(packet.header.flags.reset, false);
+        assert_eq!(packet.header.flags.arwnd_update, true);
+        assert_eq!(packet.header.flags.sec, true);
+        assert!(packet.signature_header.is_none());
+        assert!(packet.encryption_header.is_none());
+        assert_eq!(std::str::from_utf8(&*packet.payload), Ok("Hello World!"));
+    }
+
+    #[test]
+    pub fn test_to_bytes() {
+        let mut packet = Packet::new(
+            PrimaryHeader {
+                connection_id: 1u32,
+                seq_number: 2u32,
+                ack_number: 3u32,
+                arwnd: 4u16,
+                flags: PacketFlags {
+                    init: true,
+                    cookie: false,
+                    ack: true,
+                    fin: true,
+                    reset: false,
+                    sec: false,
+                    arwnd_update: false,
+                    reserved: false,
+                },
+            },
+            None,
+            None,
+            "Hello World!".as_bytes().to_vec(),
+        );
+
+        assert_eq!(
+            packet.to_bytes(),
+            [
+                0u8, 0u8, 0u8, 1u8, 0u8, 0u8, 0u8, 2u8, 0u8, 0u8, 0u8, 3u8, 0u8, 4u8, 0b10110000,
+                0u8, 'H' as u8, 'e' as u8, 'l' as u8, 'l' as u8, 'o' as u8, ' ' as u8, 'W' as u8,
+                'o' as u8, 'r' as u8, 'l' as u8, 'd' as u8, '!' as u8
+            ]
+        );
+    }
 }
