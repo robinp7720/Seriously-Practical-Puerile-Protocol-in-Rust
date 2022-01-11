@@ -35,4 +35,4 @@ network_test:
     - mv -f ./certificates/DO_NOT_USE.crt ./certificates/server.crt
     - chmod +x ./tests/realistic_network/configure_interface.sh
     - ./tests/realistic_network/configure_interface.sh
-    - cargo test --release
+    - cargo test --release -- --nocapture
