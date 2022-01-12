@@ -1,14 +1,17 @@
 use crate::connection::PacketRetransmit;
 use crate::connection_reliability_sender::CongestionPhase::{CongestionAvoidance, FastProbing};
 use crate::constants::{
-    CLOCK_GRANULARITY, INITIAL_RETRANSMISSION_TIMEOUT, MAX_PACKET_SIZE, MAX_PAYLOAD_SIZE,
-    RECEIVE_WINDOW_SIZE,
+    CLOCK_GRANULARITY, CONNECTION_IDLE_TIME, INITIAL_RETRANSMISSION_TIMEOUT, MAX_PACKET_SIZE,
+    MAX_PAYLOAD_SIZE, RECEIVE_WINDOW_SIZE,
 };
 use crate::packet::Packet;
+use rand::prelude::*;
 use std::cmp::{max, min};
 use std::collections::HashMap;
+use std::collections::LinkedList;
+use std::collections::VecDeque;
 use std::net::{SocketAddr, UdpSocket};
-use std::sync::atomic::{AtomicU16, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU32, AtomicU64, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -35,10 +38,25 @@ pub enum CongestionPhase {
 pub struct CongestionHandler {
     cwnd: AtomicU64,
     congestion_phase: Mutex<CongestionPhase>,
+    loss_til: Arc<AtomicU32>, // needs fix for wrap around case, works for now...
+    window: Mutex<VecDeque<u32>>,
+    last_packet_send: Arc<Mutex<SystemTime>>,
 }
 
 impl CongestionHandler {
-    pub fn cwnd_packet_loss(&self) {
+    pub fn cwnd_packet_loss(&self, seq_num: u32) {
+        //let mut loss_window_lock = self.loss_windows.lock().unwrap();
+        let mut window_lock = self.window.lock().unwrap();
+        //eprintln!("Losswindow: {:?}", self.loss_til.load(Ordering::Relaxed));
+        let x = match window_lock.back() {
+            Some(seq_num) => *seq_num,
+            _ => return,
+        };
+        if seq_num < self.loss_til.load(Ordering::Relaxed) {
+            return;
+        }
+        self.loss_til.store(x, Ordering::Relaxed);
+        //loss_window_lock.append(&mut *window_lock);
         self.cwnd
             .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |x| {
                 Some(self.halve_to_min(x))
@@ -48,10 +66,26 @@ impl CongestionHandler {
 
     fn halve_to_min(&self, x: u64) -> u64 {
         let y = x / 2;
-        if y > 4 * MAX_PACKET_SIZE as u64 {
+        if y > 1 * MAX_PACKET_SIZE as u64 {
             return y;
         }
-        return 4 * MAX_PACKET_SIZE as u64;
+        return 1 * MAX_PACKET_SIZE as u64;
+    }
+
+    pub fn cwnd_oos_ack(&self) {
+        self.cwnd
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |x| {
+                Some(self.three_fourth_to_min(x))
+            });
+        *self.congestion_phase.lock().unwrap() = CongestionPhase::CongestionAvoidance;
+    }
+
+    fn three_fourth_to_min(&self, x: u64) -> u64 {
+        let y = ((x as f64) * 0.75) as u64;
+        if y > 1 * MAX_PACKET_SIZE as u64 {
+            return y;
+        }
+        return 1 * MAX_PACKET_SIZE as u64;
     }
 
     pub fn get_congestion_phase(&self) -> CongestionPhase {
@@ -66,6 +100,18 @@ impl CongestionHandler {
         if self.get_cwnd() < 2_u64.pow(32) + MAX_PACKET_SIZE as u64 {
             self.cwnd.fetch_add(num_bytes, Ordering::Relaxed);
         }
+    }
+
+    fn remove_from_window(&self, seq_num: u32) {
+        {
+            let mut window_lock = self.window.lock().unwrap();
+            //eprintln!("Wnd: {:?}", window_lock);
+            window_lock.retain(|x| *x != seq_num);
+        }
+    }
+
+    pub fn append_to_window(&self, seq_num: u32) {
+        self.window.lock().unwrap().push_back(seq_num);
     }
 }
 
@@ -93,7 +139,7 @@ pub struct ConnectionReliabilitySender {
     flow_sender_tx: Sender<Packet>,
     queued_for_flight: Arc<AtomicU16>,
 
-    // track congestion window
+    // track congestion control
     congestion_handler: Arc<CongestionHandler>,
 }
 
@@ -117,6 +163,9 @@ impl ConnectionReliabilitySender {
         let congestion_handler = Arc::new(CongestionHandler {
             cwnd: AtomicU64::new(4 * MAX_PACKET_SIZE as u64),
             congestion_phase: Mutex::new(CongestionPhase::FastProbing),
+            loss_til: Arc::new(AtomicU32::new(0)),
+            window: Mutex::new(VecDeque::new()),
+            last_packet_send: Arc::new(Mutex::new(SystemTime::now())),
         });
 
         Self::start_send_thread(
@@ -127,6 +176,7 @@ impl ConnectionReliabilitySender {
             socket.try_clone().unwrap(),
             curr_rto.clone(),
             local_arwnd.clone(),
+            congestion_handler.clone(),
         );
 
         Self::start_timeout_monitor_thread(
@@ -186,9 +236,25 @@ impl ConnectionReliabilitySender {
                         > ((in_flight.load(Ordering::Relaxed) as u64) * MAX_PACKET_SIZE as u64)
                             + MAX_PACKET_SIZE as u64
                 {
+                    //eprintln!("CWND: {}", congestion_handler.cwnd.load(Ordering::Relaxed));
+                    let last_packet_sent = *congestion_handler.last_packet_send.lock().unwrap();
+                    if SystemTime::now().duration_since(last_packet_sent).unwrap()
+                        > CONNECTION_IDLE_TIME
+                    {
+                        congestion_handler
+                            .cwnd
+                            .store(4 * MAX_PACKET_SIZE as u64, Ordering::Relaxed);
+                        *congestion_handler.congestion_phase.lock().unwrap() =
+                            CongestionPhase::FastProbing;
+                        /*eprintln!(
+                            "RESETTING CWND TO: {}",
+                            congestion_handler.cwnd.load(Ordering::Relaxed)
+                        );*/
+                    }
                     break;
                 }
-                thread::park();
+                //eprintln!("CWND: {}", congestion_handler.cwnd.load(Ordering::Relaxed));
+                thread::yield_now();
             }
 
             let packet = flow_send_rx.recv().unwrap();
@@ -208,6 +274,7 @@ impl ConnectionReliabilitySender {
         socket: UdpSocket,
         curr_rto: Arc<AtomicU64>,
         arwnd: Arc<AtomicU16>,
+        congestion_handler: Arc<CongestionHandler>,
     ) {
         thread::spawn(move || {
             loop {
@@ -217,6 +284,12 @@ impl ConnectionReliabilitySender {
 
                 packet.set_arwnd(arwnd);
 
+                /*let mut rng = rand::thread_rng();
+                let y: f64 = rng.gen();
+
+                if y < 0.95 {*/
+
+                *congestion_handler.last_packet_send.lock().unwrap() = SystemTime::now();
                 match socket.send_to(&*packet.to_bytes(), addr) {
                     Ok(_) => {}
                     Err(_) => {
@@ -227,9 +300,9 @@ impl ConnectionReliabilitySender {
                         eprintln!("Sending a packet to the UDP socket failed")
                     }
                 };
-
+                //}
                 // Don't bother checking if an ACK packet is still in transit
-                // This should handle cookie ACKs aswell since they dont have a payload and have
+                // This should handle cookie ACKs as well since they dont have a payload and have
                 // the ack flag set.
                 if packet.is_ack() {
                     continue;
@@ -250,6 +323,9 @@ impl ConnectionReliabilitySender {
                 }
 
                 let send_time = SystemTime::now();
+
+                congestion_handler.append_to_window(packet.get_sequence_number());
+                //congestion_handler.window_flag.store(false, Ordering::Relaxed);
 
                 in_transit.lock().unwrap().insert(
                     packet_classification,
@@ -308,8 +384,9 @@ impl ConnectionReliabilitySender {
             };
 
             if !transit_status.arrived {
+                congestion_handler
+                    .cwnd_packet_loss(current_timeout_packet.packet.get_sequence_number());
                 sending_queue_tx.send(current_timeout_packet.packet);
-                congestion_handler.cwnd_packet_loss();
             }
         });
     }
@@ -347,7 +424,12 @@ impl ConnectionReliabilitySender {
             let mut in_transit_lock = self.in_transit.lock().unwrap();
 
             let transit_status = match in_transit_lock.get_mut(&packet_classification) {
-                None => return,
+                None => {
+                    //while self.congestion_handler.window_flag.load(Ordering::Relaxed) {}
+                    self.congestion_handler
+                        .remove_from_window(packet.get_ack_number());
+                    return;
+                }
                 Some(transit_status) => transit_status,
             };
 
@@ -357,6 +439,10 @@ impl ConnectionReliabilitySender {
 
             (duplicate, transit_status.send_time.clone())
         };
+
+        //while self.congestion_handler.window_flag.load(Ordering::Relaxed) {}
+        self.congestion_handler
+            .remove_from_window(packet.get_ack_number());
 
         if !duplicate {
             self.update_rtt(send_time);
@@ -424,7 +510,7 @@ impl ConnectionReliabilitySender {
         self.flow_thread_handle.thread().unpark();
     }
 
-    pub fn update_cwnd_ack(&mut self) {
+    pub fn update_cwnd_ack(&self) {
         if self.congestion_handler.get_congestion_phase() == CongestionPhase::FastProbing {
             self.congestion_handler
                 .increase_cwnd(MAX_PACKET_SIZE as u64);
@@ -435,11 +521,6 @@ impl ConnectionReliabilitySender {
                 .increase_cwnd(((MAX_PACKET_SIZE * MAX_PACKET_SIZE) as u64) / curr_cwnd);
         }
     }
-
-    // Handle change in cwnd when loss is detected
-    //pub fn congestion_loss(&mut self) {
-    //    !ToDo();
-    //}
 
     pub fn can_send(&self) -> bool {
         let remote_arwnd = self.remote_arwnd.load(Ordering::Relaxed) as u64;

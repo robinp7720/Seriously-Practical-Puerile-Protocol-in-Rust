@@ -20,6 +20,9 @@ pub const INITIAL_RETRANSMISSION_TIMEOUT: Duration = Duration::from_millis(2000)
 // This would be the maximum time it would take for the other peer to retransmit an ack if our fin was lost.
 pub const TIME_WAIT_TIMEOUT: Duration = Duration::from_secs(240);
 
+// If no packtes have been send for over 60 seconds, the connection is idling and cwnd has to be reset to the initial value
+pub const CONNECTION_IDLE_TIME: Duration = Duration::from_secs(60);
+
 // There is no explanation as to why this exists in the RFC.
 // According to Christopher Zeise, it's to make sure that the timeout for an ack is above
 // the minimum we can actually wait.

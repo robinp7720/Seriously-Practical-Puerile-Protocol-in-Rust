@@ -8,14 +8,14 @@ fn main() {
 
     println!("We made it! {:?}", data);
 
-    con.send(Vec::from([0, 0, 0]));
-    con.send(Vec::from([0, 0, 1]));
+    /*con.send(Vec::from([0, 0, 0]));
+    con.send(Vec::from([0, 0, 1]));*/
 
-    /*loop {
-        let data = con.recv().unwrap();
+    loop {
+        //let data = con.recv().unwrap();
 
-        println!("We made it! {:?}", data);
+        //println!("We made it! {:?}", data);
 
-        con.send(vec![0, 0, 0, 0, 3, 8, 7]);
-    }*/
+        con.send(vec![0; 1200]);
+    }
 }

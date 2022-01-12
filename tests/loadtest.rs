@@ -7,7 +7,7 @@ const IP: &str = "127.0.0.1";
 const PORT: u16 = 2060;
 
 // TODO: increase this number when congestion control is active
-const STRING_SIZE: usize = 1_000;
+const STRING_SIZE: usize = 5_000_000;
 
 ///
 /// Send a big amount of data to the server and check if it is received correctly
