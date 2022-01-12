@@ -55,7 +55,7 @@ pub struct Connection {
     external_buffer: usize,
     channel_buffer: usize,
 
-    is_client: Option<bool>,
+    is_client: bool,
 }
 
 impl Connection {
@@ -63,7 +63,7 @@ impl Connection {
         addr: SocketAddr,
         socket: UdpSocket,
         connection_id: u32,
-        cookie: Option<ConnectionCookie>,
+        is_client: bool,
     ) -> Connection {
         Connection {
             reliable_sender: ConnectionReliabilitySender::new(
@@ -86,7 +86,7 @@ impl Connection {
             external_buffer: 0,
             channel_buffer: 0,
 
-            is_client: None,
+            is_client,
         }
     }
 
@@ -96,12 +96,8 @@ impl Connection {
         return receive_channel;
     }
 
-    pub fn is_client(&self) -> Option<bool> {
+    pub fn is_client(&self) -> bool {
         self.is_client
-    }
-
-    pub fn set_is_client(&mut self, is_client: Option<bool>) {
-        self.is_client = is_client
     }
 
     pub fn start_receive_thread(&self) {}
@@ -174,12 +170,6 @@ impl Connection {
             self.handle_ack(&packet);
         }
 
-        if packet.is_sec() {
-            self.handle_sec_packet(&packet);
-
-            return;
-        }
-
         let connection_state = self.get_connection_state();
 
         // ignore packets when not in established phase
@@ -189,97 +179,82 @@ impl Connection {
         {
             let seq_num = packet.get_sequence_number();
 
-            if packet.get_sequence_number() == self.next_expected_sequence_number {
-                self.next_expected_sequence_number =
-                    packet.get_sequence_number() + packet.payload_size() as u32;
-            }
-
             if packet_expected {
-                self.internal_buffer += packet.payload_size();
-            }
-
-            if packet_expected {
-                self.insert_packet_incoming_queue(packet, packet_expected);
+                self.insert_packet_incoming_queue(packet);
             }
 
             self.send_ack(seq_num);
         }
     }
 
-    pub fn insert_packet_incoming_queue(&mut self, packet: Packet, packet_expected: bool) {
+    pub fn insert_in_order(&mut self, packet: Packet) {
         let mut incoming = self.incoming.lock().unwrap();
 
-        if packet.get_sequence_number() < self.next_expected_sequence_number {
-            // send to packet to receive channel
-            self.channel_buffer += packet.payload_size();
-            self.internal_buffer -= packet.payload_size();
-
-            let decrypted_payload = match self.security.decrypt_bytes(
-                packet.get_payload(),
-                packet.get_signature().unwrap(),
-                self.is_client().unwrap(),
-            ) {
-                Ok(payload) => payload,
-                Err(e) => panic!("{}", e),
-            };
-
-            self.receive_channel
-                .as_ref()
-                .unwrap()
-                .send(decrypted_payload);
-
-            let mut last_index = 0;
-            let mut next_expected_sequence_number =
-                packet.get_sequence_number() + packet.payload_size() as u32;
-
-            for (index, current_packet) in incoming.iter().enumerate() {
-                // find following packet
-                if current_packet.get_sequence_number() == next_expected_sequence_number {
-                    last_index = index;
-                    next_expected_sequence_number += current_packet.payload_size() as u32;
-
-                    if self.internal_buffer > current_packet.payload_size() {
-                        self.internal_buffer -= current_packet.payload_size();
-                    } else {
-                        //self.internal_buffer = 0;
-                    }
-                    self.channel_buffer += current_packet.payload_size();
-
-                    let decrypted_payload = match self.security.decrypt_bytes(
-                        packet.get_payload(),
-                        packet.get_signature().unwrap(),
-                        self.is_client().unwrap(),
-                    ) {
-                        Ok(payload) => payload,
-                        Err(e) => panic!("{}", e),
-                    };
-
-                    self.receive_channel
-                        .as_ref()
-                        .unwrap()
-                        .send(decrypted_payload);
-                }
-            }
-
-            self.next_expected_sequence_number = next_expected_sequence_number;
-
-            // remove all packets that were delivered to the application
-            incoming.drain(std::ops::Range {
-                start: 0,
-                end: last_index,
-            });
-
-            return;
-        }
         for (i, cur) in incoming.iter().enumerate() {
             if cur.get_sequence_number() > packet.get_sequence_number() {
+                self.internal_buffer += packet.payload_size();
                 incoming.insert(i, packet);
 
                 return;
             }
         }
 
+        self.internal_buffer += packet.payload_size();
         incoming.push_back(packet);
+    }
+
+    pub fn insert_packet_incoming_queue(&mut self, packet: Packet) {
+        let mut packets_to_send: Vec<Packet> = Vec::new();
+
+        // First insert the new packet in order in the incoming queue
+        // This makes it trivial to simply return all packets
+        self.insert_in_order(packet);
+
+        {
+            let mut incoming = self.incoming.lock().unwrap();
+
+            while let Some(next_packet) = incoming.front() {
+                if next_packet.get_sequence_number() != self.next_expected_sequence_number {
+                    break;
+                }
+
+                let next_packet = incoming.pop_front().unwrap();
+
+                self.next_expected_sequence_number += next_packet.payload_size() as u32;
+                self.internal_buffer -= next_packet.payload_size();
+
+                if next_packet.is_sec() {
+                    packets_to_send.extend(Self::handle_sec_packet(
+                        &mut self.security,
+                        &next_packet,
+                        self.is_client,
+                    ));
+
+                    continue;
+                }
+
+                self.channel_buffer += next_packet.payload_size();
+
+                let decrypted_payload = match self.security.decrypt_bytes(
+                    next_packet.get_payload(),
+                    next_packet.get_signature().unwrap(),
+                    self.is_client(),
+                ) {
+                    Ok(payload) => payload,
+                    Err(e) => panic!("{}", e),
+                };
+
+                self.receive_channel
+                    .as_ref()
+                    .unwrap()
+                    .send(decrypted_payload);
+            }
+        }
+
+        for mut packet in packets_to_send {
+            packet.set_connection_id(self.get_connection_id());
+            self.send_packet(packet);
+        }
     }
 
     fn start_fin_timeout(&self) {
@@ -304,67 +279,71 @@ impl Connection {
         *self.connection_state.lock().unwrap()
     }
 
-    fn handle_sec_packet(&mut self, packet: &Packet) {
+    fn handle_sec_packet(security: &mut Security, packet: &Packet, is_client: bool) -> Vec<Packet> {
         if packet.encryption_header.is_some() {
-            self.send_ack(packet.get_sequence_number());
-
-            self.next_expected_sequence_number = packet.get_sequence_number() + 1;
-
-            match self.security.check_certificate(packet.get_payload()) {
+            match security.check_certificate(packet.get_payload()) {
                 Ok(_) => {}
                 Err(error) => {
-                    eprintln!("Certificate error: {:?}", error);
-                    return;
+                    eprintln!("Certificate error: {:?}", error); /* Go to CLOSED state */
+                    return Vec::new();
                 }
             }
 
-            println!("The connection authenticity was checked successfully!");
+            eprintln!("The connection authenticity was checked successfully!");
 
-            if !self.is_client().unwrap() {
-                Security::agree_on_algorithms_server(
-                    self,
-                    packet.encryption_header.as_ref().unwrap(),
-                );
+            if !is_client {
+                return match security
+                    .agree_on_algorithms_server(packet.encryption_header.as_ref().unwrap())
+                {
+                    Ok(packets) => packets,
+                    Err((packets, error)) => {
+                        eprintln!("{}", error);
+                        /* Go to CLOSED state */
+                        packets
+                    }
+                };
             } else {
                 let header = packet.encryption_header.as_ref().unwrap();
-                self.security.set_algorithms(
-                    header.supported_encryption_algorithms[0],
-                    header.supported_signature_algorithms[0],
-                )
+
+                if header.supported_encryption_algorithms.len() == 0
+                    || header.supported_signature_algorithms.len() == 0
+                {
+                    /* Go to CLOSED state */
+                } else {
+                    // we can take the first one since all algorithms parsed are supported by this protocol
+                    security.set_algorithms(
+                        header.supported_encryption_algorithms[0],
+                        header.supported_signature_algorithms[0],
+                    )
+                }
             }
 
-            return;
+            return Vec::new();
         }
 
-        match self.security.state {
-            SecurityState::ExchangeAlgorithms => { /* ignore packages in this state */ }
+        match security.state {
+            SecurityState::ExchangeAlgorithms => {
+                eprintln!("Packets without an EncryptionHeader are ignored in the ExchangeAlgorithms State!")
+            }
             SecurityState::ExchangeKeys => {
-                // TODO handle congestion etc.?
-
-                self.next_expected_sequence_number = packet.get_sequence_number() + 1;
-
                 match packet.get_signature() {
                     None => panic!("The receive DH packet has no signature header!"),
-                    Some(sig) => self
-                        .security
-                        .rsa_verify_signature(packet.get_payload(), sig),
+                    Some(sig) => security.rsa_verify_signature(packet.get_payload(), sig),
                 }
 
-                if self.is_client().unwrap() {
-                    self.security.end_exchange_keys_client(packet.get_payload());
+                if is_client {
+                    security.end_exchange_keys_client(packet.get_payload());
                 } else {
-                    let mut packet = self.security.exchange_keys_server(packet.get_payload());
-                    packet.set_connection_id(self.connection_id);
-                    self.send_encryption_packet(packet);
+                    let mut packet = security.exchange_keys_server(packet.get_payload());
+                    return vec![packet];
                 }
-
-                let sec_num = packet.get_sequence_number();
-                self.send_ack(sec_num);
             }
             SecurityState::Secured => {
                 todo!("Handle change symmetric key")
             }
         }
+
+        Vec::new()
     }
 
     pub fn handle_init_ack(&mut self, packet: &Packet) {
@@ -474,34 +453,25 @@ impl Connection {
         self.send_packet(packet);
     }
 
-    fn send_packet(&mut self, mut packet: Packet) {
+    pub fn send_packet(&mut self, mut packet: Packet) {
         // Set the sequence number for the packet
         packet.set_sequence_number(self.current_send_sequence_number);
 
-        let (enc_payload, signature) = self
-            .security
-            .encrypt_bytes(packet.get_payload(), self.is_client().unwrap());
+        if !packet.is_sec() {
+            let (enc_payload, signature) = self
+                .security
+                .encrypt_bytes(packet.get_payload(), self.is_client());
 
-        // encrypt payload
-        packet.set_encrypted_payload(Some(enc_payload));
-        packet.push_encryption_to_payload();
+            // encrypt payload
+            packet.set_encrypted_payload(Some(enc_payload));
+            packet.push_encryption_to_payload();
 
-        if signature.len() > 0 {
-            packet.set_signature_header(SignatureHeader::new(signature));
+            if signature.len() > 0 {
+                packet.set_signature_header(SignatureHeader::new(signature));
+            }
         }
 
         self.current_send_sequence_number += packet.payload_size() as u32;
-
-        self.reliable_sender.send_packet(packet);
-    }
-
-    pub fn send_encryption_packet(&mut self, mut packet: Packet) {
-        packet.set_sequence_number(self.current_send_sequence_number);
-
-        // This is defined by the RFC!
-        self.current_send_sequence_number += 1;
-
-        packet.set_sec(true);
 
         self.reliable_sender.send_packet(packet);
     }
@@ -733,25 +703,24 @@ mod packet {
     use crate::packet::{Packet, PacketFlags, PrimaryHeader};
     use std::net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket};
 
-    #[test]
+    //#[test]
     pub fn append_to_send_queue() {
         let addr = SocketAddr::new(IpAddr::from(Ipv4Addr::new(0, 0, 0, 0)), 1200);
-        let mut con = Connection::new(addr, UdpSocket::bind(addr).unwrap(), 0, None);
+        let mut con = Connection::new(addr, UdpSocket::bind(addr).unwrap(), 0, true);
+
+        let rx = con.register_receive_channel();
 
         for i in [0, 3, 2, 1, 6, 4, 5, 9, 8, 7] {
-            con.insert_packet_incoming_queue(
-                Packet::new(
-                    PrimaryHeader::new(0, i, 0, 0, PacketFlags::new(0)),
-                    None,
-                    None,
-                    vec![],
-                ),
-                false,
-            );
+            con.insert_packet_incoming_queue(Packet::new(
+                PrimaryHeader::new(0, i, 0, 0, PacketFlags::new(0)),
+                None,
+                None,
+                vec![i as u8],
+            ));
         }
 
         for (i, cur) in con.incoming.lock().unwrap().iter().enumerate() {
-            assert_eq!(i as u32, cur.get_sequence_number());
+            assert_eq!(i as u8, rx.recv().unwrap()[0]);
         }
     }
 

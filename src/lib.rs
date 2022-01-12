@@ -202,7 +202,7 @@ impl SPPPSocket {
             thread::sleep(Duration::from_millis(100));
         }
 
-        println!("Start DH");
+        eprintln!("Start DH");
 
         {
             connection.lock().unwrap().security.state = SecurityState::ExchangeKeys;
@@ -223,7 +223,7 @@ impl SPPPSocket {
             connection.lock().unwrap().security.state = SecurityState::Secured;
         }
 
-        println!("Connected");
+        eprintln!("Connected");
 
         Ok(SPPPConnection {
             connection,
@@ -249,10 +249,19 @@ impl SPPPSocket {
         eprintln!("Waiting for connection to be established");
         while connection.lock().unwrap().get_connection_state() != ConnectionState::Established {}
 
-        println!("Starting security");
+        eprintln!("Starting security");
         // At this point the connection is established and we need to
+
         {
-            Security::agree_on_algorithms_client(&mut connection.lock().unwrap());
+            // send packets for algorithm agreement and certificate exchange
+
+            let mut connection = connection.lock().unwrap();
+            let packets = connection.security.agree_on_algorithms_client();
+
+            for mut packet in packets {
+                packet.set_connection_id(connection.get_connection_id());
+                connection.send_packet(packet);
+            }
         }
 
         // wait till agree on algorithms is completed
@@ -268,14 +277,14 @@ impl SPPPSocket {
 
         // TODO certificates
 
-        println!("Start DH");
+        eprintln!("Start DH");
 
         {
             let mut connection = connection.lock().unwrap();
             connection.security.state = SecurityState::ExchangeKeys;
             let mut dh_packet = connection.security.start_exchange_keys_client();
             dh_packet.set_connection_id(connection.get_connection_id());
-            connection.send_encryption_packet(dh_packet);
+            connection.send_packet(dh_packet);
         }
 
         // wait till master secret is set
@@ -293,7 +302,7 @@ impl SPPPSocket {
             connection.lock().unwrap().security.state = SecurityState::Secured;
         }
 
-        println!("Connected");
+        eprintln!("Connected");
 
         Ok(SPPPConnection {
             connection,

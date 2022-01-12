@@ -162,7 +162,7 @@ impl EncryptionHeader {
                     .supported_encryption_algorithms
                     .push(EncryptionType::AES256counter),
                 x => {
-                    panic!("The encryption type {} is not known!", x)
+                    eprintln!("The encryption type {} is not known!", x)
                 }
             }
         }
@@ -173,7 +173,7 @@ impl EncryptionHeader {
                     .supported_signature_algorithms
                     .push(SignatureType::SHA3_256),
                 x => {
-                    panic!("The signature type {} is not known!", x)
+                    eprintln!("The signature type {} is not known!", x)
                 }
             }
         }

@@ -119,27 +119,38 @@ impl Security {
         Err("Can not find issuing certificate!")
     }
 
-    pub fn agree_on_algorithms_client(connection: &mut MutexGuard<Connection>) {
+    pub fn agree_on_algorithms_client(&self) -> Vec<Packet> {
         let payload = CETIFICATE.to_pem().unwrap();
 
         let chunks: Vec<&[u8]> = payload.chunks(MAX_PAYLOAD_SIZE).collect();
 
+        let mut packets = Vec::new();
+
         for chunk in chunks {
-            let flags = PacketFlags::new(0);
-            let header = PrimaryHeader::new(connection.get_connection_id(), 0, 0, 0, flags);
+            let mut flags = PacketFlags::new(0);
+            flags.sec = true;
+
+            let header = PrimaryHeader::new(0, 0, 0, 0, flags);
             let encryption_header = EncryptionHeader {
                 supported_encryption_algorithms: vec![EncryptionType::AES256counter],
                 supported_signature_algorithms: vec![SignatureType::SHA3_256],
             };
 
             let packet = Packet::new(header, Some(encryption_header), None, chunk.to_vec());
-            connection.send_encryption_packet(packet);
+            packets.push(packet);
         }
+
+        packets
     }
 
-    pub fn agree_on_algorithms_server(connection: &mut Connection, header: &EncryptionHeader) {
+    pub fn agree_on_algorithms_server(
+        &mut self,
+        header: &EncryptionHeader,
+    ) -> Result<Vec<Packet>, (Vec<Packet>, &'static str)> {
+        // The own certificate should be the payload
         let payload = CETIFICATE.to_pem().unwrap();
 
+        // split the certificate into multiple parts when it exeeds the max payload
         let chunks: Vec<&[u8]> = payload.chunks(MAX_PAYLOAD_SIZE).collect();
 
         let mut enc_algo = None;
@@ -159,14 +170,34 @@ impl Security {
             sig_algo = Some(SignatureType::SHA3_256);
         }
 
+        let mut packets = Vec::new();
+
+        // there is no common algorithms between the parties
         if !enc_algo.is_some() || !sig_algo.is_some() {
-            // TODO handle this case
-            println!("Could not agree on algos!");
+            eprintln!("Could not agree on algos!");
+
+            let mut flags = PacketFlags::new(0);
+            flags.sec = true;
+
+            let primary_header = PrimaryHeader::new(0, 0, 0, 0, flags);
+
+            let encryption_header = EncryptionHeader {
+                supported_encryption_algorithms: vec![],
+                supported_signature_algorithms: vec![],
+            };
+
+            let packet = Packet::new(primary_header, Some(encryption_header), None, vec![]);
+
+            packets.push(packet);
+
+            return Err((packets, "Could not agree on algorithms!"));
         }
 
         for chunk in chunks {
-            let flags = PacketFlags::new(0);
-            let primary_header = PrimaryHeader::new(connection.get_connection_id(), 0, 0, 0, flags);
+            let mut flags = PacketFlags::new(0);
+            flags.sec = true;
+
+            let primary_header = PrimaryHeader::new(0, 0, 0, 0, flags);
 
             let encryption_header = EncryptionHeader {
                 supported_encryption_algorithms: vec![enc_algo.clone().unwrap()],
@@ -180,16 +211,16 @@ impl Security {
                 chunk.to_vec(),
             );
 
-            connection.send_encryption_packet(packet);
+            packets.push(packet);
         }
 
-        connection
-            .security
-            .set_algorithms(enc_algo.unwrap(), sig_algo.unwrap());
+        self.set_algorithms(enc_algo.unwrap(), sig_algo.unwrap());
+
+        Ok(packets)
     }
 
     pub fn set_algorithms(&mut self, enc: EncryptionType, sig: SignatureType) {
-        println!(
+        eprintln!(
             "Agreed on algorithms. Encryption: {:?}, Signature: {:?}",
             enc, sig
         );
@@ -261,7 +292,10 @@ impl Security {
         let signature_header = self.rsa_sign(payload.to_vec(), true);
         let signature_header = SignatureHeader::new(signature_header);
 
-        let header = PrimaryHeader::new(0, 0, 0, 0, PacketFlags::new(0));
+        let mut flags = PacketFlags::new(0);
+        flags.sec = true;
+
+        let header = PrimaryHeader::new(0, 0, 0, 0, flags);
 
         Packet::new(header, None, Some(signature_header), payload)
     }
@@ -309,8 +343,6 @@ impl Security {
             &payload[6..(other_key_length + 6) as usize],
         ));
 
-        // TODO check if prime and generator are the same
-
         self.master_secret = Some(
             self.dh_other_public_key
                 .as_ref()
@@ -334,7 +366,10 @@ impl Security {
         let signature = self.rsa_sign(payload.to_vec(), false);
         let signature_header = SignatureHeader::new(signature);
 
-        let header = PrimaryHeader::new(0, 0, 0, 0, PacketFlags::new(0));
+        let mut flags = PacketFlags::new(0);
+        flags.sec = true;
+
+        let header = PrimaryHeader::new(0, 0, 0, 0, flags);
 
         Packet::new(header, None, Some(signature_header), payload)
     }

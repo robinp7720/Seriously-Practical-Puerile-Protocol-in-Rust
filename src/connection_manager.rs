@@ -58,9 +58,7 @@ impl ConnectionManager {
                     let connection_id: u32 = rand::random();
 
                     let mut connection =
-                        Connection::new(src, socket.try_clone().unwrap(), connection_id, None);
-
-                    connection.set_is_client(Some(false));
+                        Connection::new(src, socket.try_clone().unwrap(), connection_id, false);
 
                     connection.send_init_ack();
 
@@ -148,10 +146,6 @@ impl ConnectionManager {
 
                     let cloned_connection = Arc::clone(&connection);
 
-                    {
-                        cloned_connection.lock().unwrap().set_is_client(Some(false));
-                    }
-
                     return cloned_connection;
                 }
                 None => {}
@@ -167,12 +161,8 @@ impl ConnectionManager {
             addr.to_socket_addrs().unwrap().next().unwrap(),
             self.socket.try_clone().unwrap(),
             0,
-            None,
+            true,
         )));
-
-        {
-            connection.lock().unwrap().set_is_client(Some(true));
-        }
 
         self.connections
             .lock()
