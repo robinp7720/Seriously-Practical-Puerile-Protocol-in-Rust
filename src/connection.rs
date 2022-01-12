@@ -46,7 +46,6 @@ pub struct Connection {
     next_expected_sequence_number: u32,
 
     receive_channel: Option<Sender<Vec<u8>>>,
-    on_connection_closed_channel: Sender<u32>,
 
     reliable_sender: ConnectionReliabilitySender,
 
@@ -65,7 +64,6 @@ impl Connection {
         socket: UdpSocket,
         connection_id: u32,
         cookie: Option<ConnectionCookie>,
-        on_connection_closed_channel: Sender<u32>,
     ) -> Connection {
         Connection {
             reliable_sender: ConnectionReliabilitySender::new(
@@ -89,8 +87,6 @@ impl Connection {
             channel_buffer: 0,
 
             is_client: None,
-
-            on_connection_closed_channel,
         }
     }
 
@@ -288,13 +284,10 @@ impl Connection {
 
     fn start_fin_timeout(&self) {
         let connection_state = self.connection_state.clone();
-        let channel = self.on_connection_closed_channel.clone();
-        let connection_id = self.connection_id;
 
         thread::spawn(move || {
             thread::sleep(TIME_WAIT_TIMEOUT);
-            *connection_state.lock().unwrap() = ConnectionState::Closed;
-            channel.send(connection_id);
+            *connection_state.lock().unwrap() = ConnectionState::Closed
         });
     }
 
@@ -739,19 +732,11 @@ mod packet {
     use crate::connection::Connection;
     use crate::packet::{Packet, PacketFlags, PrimaryHeader};
     use std::net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket};
-    use std::sync::mpsc::channel;
-    use std::sync::{Arc, Mutex};
 
     #[test]
     pub fn append_to_send_queue() {
         let addr = SocketAddr::new(IpAddr::from(Ipv4Addr::new(0, 0, 0, 0)), 1200);
-        let mut con = Connection::new(
-            addr,
-            UdpSocket::bind(addr).unwrap(),
-            0,
-            None,
-            channel::<u32>().0,
-        );
+        let mut con = Connection::new(addr, UdpSocket::bind(addr).unwrap(), 0, None);
 
         for i in [0, 3, 2, 1, 6, 4, 5, 9, 8, 7] {
             con.insert_packet_incoming_queue(

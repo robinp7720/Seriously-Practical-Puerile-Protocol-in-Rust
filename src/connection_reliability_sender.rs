@@ -7,19 +7,13 @@ use crate::constants::{
 use crate::packet::Packet;
 use std::cmp::{max, min};
 use std::collections::HashMap;
-use std::mem::{swap, take};
 use std::net::{SocketAddr, UdpSocket};
 use std::sync::atomic::{AtomicU16, AtomicU64, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
-use std::sync::{mpsc, Arc, Mutex};
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::thread::JoinHandle;
 use std::time::{Duration, SystemTime};
-
-struct ReliabilitySenderThreadStop {
-    join_handle: Option<JoinHandle<usize>>,
-    send_channel: Sender<usize>, // any message send in this channel signals the thread to terminate
-}
 
 struct TimeoutPacket {
     send_time: SystemTime,
@@ -92,9 +86,6 @@ pub struct ConnectionReliabilitySender {
 
     in_flight: Arc<AtomicU16>,
 
-    // channel and join handle to all threads
-    threads: Vec<ReliabilitySenderThreadStop>,
-
     // Available receive window in packets
     local_arwnd: Arc<AtomicU16>,
     remote_arwnd: Arc<AtomicU16>,
@@ -128,8 +119,7 @@ impl ConnectionReliabilitySender {
             congestion_phase: Mutex::new(CongestionPhase::FastProbing),
         });
 
-        let send_thread_channel: (Sender<usize>, Receiver<usize>) = mpsc::channel();
-        let send_thread_join_handle = Self::start_send_thread(
+        Self::start_send_thread(
             sending_queue_rx,
             in_transit.clone(),
             in_transit_queue_tx.clone(),
@@ -137,19 +127,15 @@ impl ConnectionReliabilitySender {
             socket.try_clone().unwrap(),
             curr_rto.clone(),
             local_arwnd.clone(),
-            send_thread_channel.1,
         );
 
-        let timeout_monitor_thread_channel: (Sender<usize>, Receiver<usize>) = mpsc::channel();
-        let timeout_monitor_join_handle = Self::start_timeout_monitor_thread(
+        Self::start_timeout_monitor_thread(
             in_transit_queue_rx,
             sending_queue_tx.clone(),
             in_transit.clone(),
             congestion_handler.clone(),
-            timeout_monitor_thread_channel.1,
         );
 
-        let flow_thread_channel: (Sender<usize>, Receiver<usize>) = mpsc::channel();
         let flow_thread_handle = Self::start_flow_thread(
             flow_sender_rx,
             sending_queue_tx.clone(),
@@ -157,7 +143,6 @@ impl ConnectionReliabilitySender {
             remote_arwnd.clone(),
             queued_for_flight.clone(),
             congestion_handler.clone(),
-            flow_thread_channel.1,
         );
 
         ConnectionReliabilitySender {
@@ -168,21 +153,6 @@ impl ConnectionReliabilitySender {
             flow_sender_tx,
 
             flow_thread_handle,
-
-            threads: vec![
-                ReliabilitySenderThreadStop {
-                    join_handle: Some(send_thread_join_handle),
-                    send_channel: send_thread_channel.0,
-                },
-                ReliabilitySenderThreadStop {
-                    join_handle: Some(timeout_monitor_join_handle),
-                    send_channel: timeout_monitor_thread_channel.0,
-                },
-                ReliabilitySenderThreadStop {
-                    join_handle: None,
-                    send_channel: flow_thread_channel.0,
-                },
-            ],
 
             socket,
             addr,
@@ -208,7 +178,6 @@ impl ConnectionReliabilitySender {
         remote_arwnd: Arc<AtomicU16>,
         queued_for_flight: Arc<AtomicU16>,
         congestion_handler: Arc<CongestionHandler>,
-        thread_stop_receiver: Receiver<usize>,
     ) -> JoinHandle<u8> {
         thread::spawn(move || loop {
             loop {
@@ -219,30 +188,15 @@ impl ConnectionReliabilitySender {
                 {
                     break;
                 }
-
                 thread::park();
-
-                if thread_stop_receiver.try_recv().is_ok() {
-                    eprintln!("stopping flow thread");
-                    return 0;
-                }
             }
 
-            while let packet = flow_send_rx.try_recv() {
-                if thread_stop_receiver.try_recv().is_ok() {
-                    eprintln!("stopping flow thread");
-                    return 0;
-                }
+            let packet = flow_send_rx.recv().unwrap();
 
-                if packet.is_ok() {
-                    let packet = packet.unwrap();
+            in_flight.fetch_add(1, Ordering::Relaxed);
+            queued_for_flight.fetch_sub(1, Ordering::Relaxed);
 
-                    in_flight.fetch_add(1, Ordering::Relaxed);
-                    queued_for_flight.fetch_sub(1, Ordering::Relaxed);
-
-                    sending_queue_tx.send(packet);
-                }
-            }
+            sending_queue_tx.send(packet);
         })
     }
 
@@ -254,22 +208,10 @@ impl ConnectionReliabilitySender {
         socket: UdpSocket,
         curr_rto: Arc<AtomicU64>,
         arwnd: Arc<AtomicU16>,
-        thread_stop_receiver: Receiver<usize>,
-    ) -> JoinHandle<usize> {
+    ) {
         thread::spawn(move || {
             loop {
-                if thread_stop_receiver.try_recv().is_ok() {
-                    eprintln!("Stopping send thread");
-                    return 0;
-                }
-
-                let mut packet = sending_queue_rx.try_recv();
-
-                if packet.is_err() {
-                    continue;
-                }
-
-                let mut packet = packet.unwrap();
+                let mut packet = sending_queue_rx.recv().unwrap();
 
                 let arwnd = arwnd.load(Ordering::Relaxed);
 
@@ -323,7 +265,7 @@ impl ConnectionReliabilitySender {
                     timeout: Duration::from_millis(curr_rto.load(Ordering::Relaxed)),
                 });
             }
-        })
+        });
     }
 
     fn start_timeout_monitor_thread(
@@ -331,21 +273,9 @@ impl ConnectionReliabilitySender {
         sending_queue_tx: Sender<Packet>,
         in_transit: Arc<Mutex<HashMap<PacketRetransmit, TransitStatus>>>,
         mut congestion_handler: Arc<CongestionHandler>,
-        thread_stop_receiver: Receiver<usize>,
-    ) -> JoinHandle<usize> {
+    ) {
         thread::spawn(move || loop {
-            if thread_stop_receiver.try_recv().is_ok() {
-                eprintln!("Stopping timeout monitor thread");
-                return 0;
-            }
-
-            let current_timeout_packet = transit_queue_rx.try_recv();
-
-            if current_timeout_packet.is_err() {
-                continue;
-            }
-
-            let current_timeout_packet = current_timeout_packet.unwrap();
+            let current_timeout_packet = transit_queue_rx.recv().unwrap();
 
             let deadline = current_timeout_packet.send_time + current_timeout_packet.timeout;
             let time_to_wait = match deadline.duration_since(SystemTime::now()) {
@@ -381,7 +311,7 @@ impl ConnectionReliabilitySender {
                 sending_queue_tx.send(current_timeout_packet.packet);
                 congestion_handler.cwnd_packet_loss();
             }
-        })
+        });
     }
 
     pub fn send_packet(&mut self, packet: Packet) {
@@ -522,25 +452,5 @@ impl ConnectionReliabilitySender {
         );*/
 
         return remote_arwnd > queued;
-    }
-}
-
-impl Drop for ConnectionReliabilitySender {
-    fn drop(&mut self) {
-        while let Some(mut thread) = self.threads.pop() {
-            thread.send_channel.send(0);
-            if thread.join_handle.is_some() {
-                let mut t = thread.join_handle.unwrap();
-                t.join().expect("Could not join thread");
-            }
-        }
-
-        let mut flow_thread_handle = thread::spawn(|| 0);
-        swap(&mut flow_thread_handle, &mut self.flow_thread_handle);
-
-        flow_thread_handle.thread().unpark();
-        flow_thread_handle.join().expect("Could not join thread");
-
-        eprintln!("Reliability sender dropped");
     }
 }

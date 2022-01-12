@@ -5,7 +5,6 @@ use crate::ConnectionState;
 use std::collections::HashMap;
 use std::io::Error;
 use std::net::{ToSocketAddrs, UdpSocket};
-use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::thread;
@@ -14,51 +13,26 @@ pub struct ConnectionManager {
     connections: Arc<Mutex<HashMap<u32, Arc<Mutex<Connection>>>>>,
     connection_queue: Arc<Mutex<Vec<u32>>>,
     socket: UdpSocket,
-    on_connection_closed_channel: (Sender<u32>, Arc<Mutex<Receiver<u32>>>),
 }
 
 impl ConnectionManager {
     pub fn new(socket: UdpSocket) -> Self {
-        let on_connection_closed_channel = channel::<u32>();
-
         ConnectionManager {
             socket,
             connections: Arc::new(Mutex::new(HashMap::new())),
             connection_queue: Arc::new(Mutex::new(Vec::new())),
-            on_connection_closed_channel: (
-                on_connection_closed_channel.0,
-                Arc::new(Mutex::new(on_connection_closed_channel.1)),
-            ),
         }
     }
 
     pub fn start(&self) {
         self.start_recv_thread();
-        self.start_connection_closed_thread();
-    }
-
-    fn start_connection_closed_thread(&self) {
-        let receiver = self.on_connection_closed_channel.1.clone();
-        let connections = self.connections.clone();
-
-        thread::spawn(move || loop {
-            // check for connections which have been closed and want to be destroyed
-            // by retrieving from the channel and removing them from the hash map
-            match receiver.lock().unwrap().try_recv() {
-                Ok(connection_id) => {
-                    connections.lock().unwrap().remove(&connection_id);
-                }
-                Err(_) => {}
-            }
-        });
     }
 
     fn start_recv_thread(&self) {
         let socket = self.socket.try_clone().unwrap();
 
-        let connection_queue = self.connection_queue.clone();
-        let connections = self.connections.clone();
-        let on_connection_closed_sender = self.on_connection_closed_channel.0.clone();
+        let connection_queue = Arc::clone(&self.connection_queue);
+        let connections = Arc::clone(&self.connections);
 
         // Listening thread
         thread::spawn(move || loop {
@@ -83,13 +57,8 @@ impl ConnectionManager {
                 if packet.get_connection_id() == 0 && packet.is_init() {
                     let connection_id: u32 = rand::random();
 
-                    let mut connection = Connection::new(
-                        src,
-                        socket.try_clone().unwrap(),
-                        connection_id,
-                        None,
-                        on_connection_closed_sender.clone(),
-                    );
+                    let mut connection =
+                        Connection::new(src, socket.try_clone().unwrap(), connection_id, None);
 
                     connection.set_is_client(Some(false));
 
@@ -199,7 +168,6 @@ impl ConnectionManager {
             self.socket.try_clone().unwrap(),
             0,
             None,
-            self.on_connection_closed_channel.0.clone(),
         )));
 
         {
