@@ -106,8 +106,10 @@ impl Connection {
     pub fn start_receive_thread(&self) {}
 
     pub fn verify_cookie(&self, cookie: &ConnectionCookie) -> bool {
-        // TODO: Calculate MAC (Cookie Signature)
-        if cookie.source_addr != self.addr {
+        if cookie.source_addr != self.addr
+            || cookie.connection_id != self.cookie.as_ref().unwrap().connection_id
+            || cookie.hmac != self.cookie.as_ref().unwrap().hmac
+        {
             return false;
         }
 
@@ -399,18 +401,39 @@ impl Connection {
         self.send_cookie_echo();
     }
 
+    fn send_reset(&mut self) {
+        eprintln!("Sending reset");
+
+        // TODO: are there more things to clear?
+        self.incoming.lock().unwrap().clear();
+        self.reliable_sender =
+            ConnectionReliabilitySender::new(self.addr.clone(), self.socket.try_clone().unwrap());
+
+        let mut flags = PacketFlags::new(0);
+        flags.reset = true;
+
+        let packet = Packet::new(
+            PrimaryHeader::new(self.connection_id, 0, 0, 0, flags),
+            None,
+            None,
+            vec![],
+        );
+
+        self.send_packet(packet);
+    }
+
     pub fn handle_cookie_echo(&mut self, packet: Packet) {
         let cookie = ConnectionCookie::from_bytes(packet.get_payload());
 
-        // TODO: Handle expired cookie
-        //       This is *very* unlikely to happen
+        // handling expired cookie
+        if self.cookie.as_ref().unwrap().has_expired() {
+            self.send_reset();
+        }
 
         let valid = self.verify_cookie(&cookie);
 
         if !valid {
-            // TODO: Handle invalid cookie
-            //       Close the connection maybe?
-            //       Send a reset?
+            // just do nothing
             return;
         }
 
@@ -585,14 +608,14 @@ impl Connection {
         flags.init = true;
         flags.ack = true;
 
-        // TODO: sign cookie and save MAC
+        // sign cookie and save MAC
         self.cookie = Some(ConnectionCookie::new(self.addr, self.connection_id));
 
         let packet = Packet::new(
             PrimaryHeader::new(self.connection_id, 0, 0, 0, flags),
             None,
             None,
-            self.cookie.as_ref().unwrap().to_bytes(),
+            self.cookie.as_ref().unwrap().to_bytes(true),
         );
 
         self.send_packet(packet);
@@ -608,7 +631,7 @@ impl Connection {
             PrimaryHeader::new(self.connection_id, 0, 0, 0, flags),
             None,
             None,
-            cookie.to_bytes(),
+            cookie.to_bytes(true),
         );
 
         self.set_connection_state(ConnectionState::CookieEchoed);

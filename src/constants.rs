@@ -11,6 +11,9 @@ pub const MAX_PACKET_SIZE: usize = MAX_PAYLOAD_SIZE
     + MAX_SIGNATURE_HEADER_SIZE
     + MAX_ENCRYPTION_HEADER_SIZE;
 
+pub const CONNECTION_COOKIE_HMAC_KEY: &str =
+    "Sjd[%h>$tE9RpdkVm1q^h^0{H53`fNhPT#a3pXz+du9PLLc)T.}y:zV`#t|=5;K";
+
 // The retransmission timeout to be used before an RTT can be completed
 pub const INITIAL_RETRANSMISSION_TIMEOUT: Duration = Duration::from_millis(2000); // Timeout for retransmission in milliseconds
 
