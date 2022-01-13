@@ -56,6 +56,7 @@ pub struct Connection {
     channel_buffer: usize,
 
     is_client: bool,
+    is_encrypted: bool,
 }
 
 impl Connection {
@@ -64,6 +65,7 @@ impl Connection {
         socket: UdpSocket,
         connection_id: u32,
         is_client: bool,
+        is_encrypted: bool,
     ) -> Connection {
         Connection {
             reliable_sender: ConnectionReliabilitySender::new(
@@ -87,6 +89,7 @@ impl Connection {
             channel_buffer: 0,
 
             is_client,
+            is_encrypted,
         }
     }
 
@@ -185,6 +188,18 @@ impl Connection {
 
             self.send_ack(seq_num);
         }
+
+        if self.is_client()
+            && self.security.state == SecurityState::Secured
+            && self.security.key_expired()
+        {
+            eprintln!("[INFO] The key has expired. Exchanging a new one...");
+            self.security.state = SecurityState::ChangeKeys;
+            for mut packet in self.security.agree_on_algorithms_client() {
+                packet.set_connection_id(self.get_connection_id());
+                self.send_packet(packet);
+            }
+        }
     }
 
     pub fn insert_in_order(&mut self, packet: Packet) {
@@ -234,24 +249,32 @@ impl Connection {
                 self.internal_buffer -= next_packet.payload_size();
 
                 if next_packet.is_sec() {
-                    packets_to_send.extend(Self::handle_sec_packet(
-                        &mut self.security,
-                        &next_packet,
-                        self.is_client,
-                    ));
+                    if self.is_encrypted {
+                        packets_to_send.extend(Self::handle_sec_packet(
+                            &mut self.security,
+                            &next_packet,
+                            self.is_client,
+                        ));
+                    } else {
+                        eprintln!("[WARNING] We got a packet with a sec flag. Since encryption was disabled by you, it will be ignored!");
+                    }
 
                     continue;
                 }
 
                 self.channel_buffer += next_packet.payload_size();
 
-                let decrypted_payload = match self.security.decrypt_bytes(
-                    next_packet.get_payload(),
-                    next_packet.get_signature().unwrap(),
-                    self.is_client(),
-                ) {
-                    Ok(payload) => payload,
-                    Err(e) => panic!("{}", e),
+                let decrypted_payload = if self.is_encrypted {
+                    match self.security.decrypt_bytes(
+                        next_packet.get_payload(),
+                        next_packet.get_signature().unwrap(),
+                        self.is_client(),
+                    ) {
+                        Ok(payload) => payload,
+                        Err(e) => panic!("{}", e),
+                    }
+                } else {
+                    next_packet.get_payload()
                 };
 
                 self.receive_channel
@@ -294,13 +317,14 @@ impl Connection {
             match security.check_certificate(packet.get_payload()) {
                 Ok(_) => {}
                 Err(error) => {
-                    eprintln!("Certificate error: {:?}", error); /* Go to CLOSED state */
+                    eprintln!("{:?}", error); /* Go to CLOSED state */
                     return Vec::new();
                 }
             }
 
-            eprintln!("The connection authenticity was checked successfully!");
+            eprintln!("[INFO] The connection authenticity was checked successfully!");
 
+            security.state = SecurityState::ExchangeKeys;
             if !is_client {
                 return match security
                     .agree_on_algorithms_server(packet.encryption_header.as_ref().unwrap())
@@ -324,7 +348,9 @@ impl Connection {
                     security.set_algorithms(
                         header.supported_encryption_algorithms[0],
                         header.supported_signature_algorithms[0],
-                    )
+                    );
+
+                    return vec![security.start_exchange_keys_client()];
                 }
             }
 
@@ -333,7 +359,7 @@ impl Connection {
 
         match security.state {
             SecurityState::ExchangeAlgorithms => {
-                eprintln!("Packets without an EncryptionHeader are ignored in the ExchangeAlgorithms State!")
+                eprintln!("[WARNING] Packets without an EncryptionHeader are ignored in the ExchangeAlgorithms State!")
             }
             SecurityState::ExchangeKeys => {
                 match packet.get_signature() {
@@ -349,7 +375,10 @@ impl Connection {
                 }
             }
             SecurityState::Secured => {
-                todo!("Handle change symmetric key")
+                panic!("You should not be here!");
+            }
+            SecurityState::ChangeKeys => {
+                panic!("You should not be here!");
             }
         }
 
@@ -473,8 +502,7 @@ impl Connection {
                 .encrypt_bytes(packet.get_payload(), self.is_client());
 
             // encrypt payload
-            packet.set_encrypted_payload(Some(enc_payload));
-            packet.push_encryption_to_payload();
+            packet.set_payload(enc_payload);
 
             if signature.len() > 0 {
                 packet.set_signature_header(SignatureHeader::new(signature));
@@ -484,6 +512,19 @@ impl Connection {
         self.current_send_sequence_number += packet.payload_size() as u32;
 
         self.reliable_sender.send_packet(packet);
+
+        // if the key expired we restart the security handshake
+        if self.is_client()
+            && self.security.state == SecurityState::Secured
+            && self.security.key_expired()
+        {
+            eprintln!("[INFO] The key has expired. Exchanging a new one...");
+            self.security.state = SecurityState::ChangeKeys;
+            for mut packet in self.security.agree_on_algorithms_client() {
+                packet.set_connection_id(self.get_connection_id());
+                self.send_packet(packet);
+            }
+        }
     }
 
     fn send_ack(&mut self, seq_num: u32) {
@@ -716,7 +757,7 @@ mod packet {
     //#[test]
     pub fn append_to_send_queue() {
         let addr = SocketAddr::new(IpAddr::from(Ipv4Addr::new(0, 0, 0, 0)), 1200);
-        let mut con = Connection::new(addr, UdpSocket::bind(addr).unwrap(), 0, true);
+        let mut con = Connection::new(addr, UdpSocket::bind(addr).unwrap(), 0, true, false);
 
         let rx = con.register_receive_channel();
 

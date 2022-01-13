@@ -216,7 +216,6 @@ pub struct Packet {
     pub encryption_header: Option<EncryptionHeader>,
     pub signature_header: Option<SignatureHeader>,
     payload: Vec<u8>,
-    encrypted_payload: Option<Vec<u8>>,
 }
 
 impl Packet {
@@ -231,7 +230,6 @@ impl Packet {
             encryption_header,
             signature_header,
             payload,
-            encrypted_payload: None,
         }
     }
 
@@ -255,13 +253,6 @@ impl Packet {
 
     pub fn get_connection_id(&self) -> u32 {
         self.header.connection_id
-    }
-
-    pub fn get_encrypted_payload(&self) -> Option<Vec<u8>> {
-        match &self.encrypted_payload {
-            None => None,
-            Some(payload) => Some(payload.to_vec()),
-        }
     }
 
     pub fn get_payload(&self) -> Vec<u8> {
@@ -313,17 +304,6 @@ impl Packet {
 
     pub fn set_payload(&mut self, payload: Vec<u8>) {
         self.payload = payload;
-    }
-
-    pub fn set_encrypted_payload(&mut self, payload: Option<Vec<u8>>) {
-        self.encrypted_payload = payload;
-    }
-
-    pub fn push_encryption_to_payload(&mut self) {
-        match &self.encrypted_payload {
-            None => {}
-            Some(payload) => self.payload = payload.to_vec(),
-        }
     }
 
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, &str> {
@@ -378,7 +358,6 @@ impl Packet {
             payload: bytes[next_header_index + 1..].to_vec(),
             encryption_header,
             signature_header,
-            encrypted_payload: None,
         })
     }
 

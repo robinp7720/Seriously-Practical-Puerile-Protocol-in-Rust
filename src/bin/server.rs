@@ -3,7 +3,7 @@ use std::str::from_utf8;
 use std::thread;
 
 fn main() {
-    let socket = SPPPSocket::new(Some(2030));
+    let socket = SPPPSocket::new(Some(2030), true);
 
     let mut connection = socket.accept().unwrap();
     connection.send(vec![0; 10]);

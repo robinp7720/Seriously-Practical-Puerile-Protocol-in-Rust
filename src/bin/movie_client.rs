@@ -2,7 +2,7 @@ use spppsocketredo::SPPPSocket;
 use std::io::Write;
 
 fn main() {
-    let mut socket = SPPPSocket::new(None);
+    let mut socket = SPPPSocket::new(None, true);
     let mut con = socket.connect("81.169.201.84:2031").unwrap();
 
     loop {

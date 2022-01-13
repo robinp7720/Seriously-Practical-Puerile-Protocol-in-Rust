@@ -2,7 +2,7 @@ use spppsocketredo::SPPPSocket;
 use std::thread;
 
 fn main() {
-    let socket = SPPPSocket::new(Some(2030));
+    let socket = SPPPSocket::new(Some(2030), true);
 
     loop {
         let mut connection = socket.accept().unwrap();

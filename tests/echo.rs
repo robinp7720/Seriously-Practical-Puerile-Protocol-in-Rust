@@ -24,7 +24,7 @@ fn echo_server_integration() {
 }
 
 fn client() {
-    let mut socket = SPPPSocket::new(None);
+    let mut socket = SPPPSocket::new(None, true);
     let mut con = socket.connect(format!("{}:{}", IP, PORT)).unwrap();
 
     let message = String::from("Hello, world!");
@@ -35,7 +35,7 @@ fn client() {
 }
 
 fn server() {
-    let socket = SPPPSocket::new(Some(PORT));
+    let socket = SPPPSocket::new(Some(PORT), true);
 
     loop {
         let mut connection = socket.accept().unwrap();
