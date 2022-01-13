@@ -1,5 +1,6 @@
-use spppsocketredo::SPPPSocket;
 use std::thread;
+
+use spppsocketredo::SPPPSocket;
 
 fn main() {
     let socket = SPPPSocket::new(Some(2030), true);

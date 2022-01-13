@@ -1,7 +1,9 @@
-use crate::connection_security::SignatureType::SHA3_256;
-use crate::constants::{DIFFIE_HELLMAN_GENERATOR, DIFFIE_HELLMAN_PRIME};
-use crate::packet::{EncryptionHeader, Packet, PacketFlags, PrimaryHeader, SignatureHeader};
-use crate::{Connection, SPPPConnection, MAX_PAYLOAD_SIZE};
+use std::path::Path;
+use std::sync::{Arc, Mutex, MutexGuard};
+use std::thread;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::{fs, io};
+
 use aes::cipher::generic_array::{typenum::U32, GenericArray};
 use aes::cipher::{NewCipher, StreamCipher};
 use aes::{Aes192Ctr, Aes256Ctr, Block};
@@ -20,11 +22,11 @@ use openssl::sign::{Signer, Verifier};
 use openssl::x509::{X509VerifyResult, X509};
 use rand::rngs::OsRng;
 use sha3::Sha3_256;
-use std::path::Path;
-use std::sync::{Arc, Mutex, MutexGuard};
-use std::thread;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use std::{fs, io};
+
+use crate::connection_security::SignatureType::SHA3_256;
+use crate::constants::{DIFFIE_HELLMAN_GENERATOR, DIFFIE_HELLMAN_PRIME};
+use crate::packet::{EncryptionHeader, Packet, PacketFlags, PrimaryHeader, SignatureHeader};
+use crate::{Connection, SPPPConnection, MAX_PAYLOAD_SIZE};
 
 #[derive(Debug)]
 pub struct Security {

@@ -1,6 +1,7 @@
-use spppsocketredo::SPPPSocket;
 use std::thread;
 use std::time::Duration;
+
+use spppsocketredo::SPPPSocket;
 
 fn main() {
     let mut socket = SPPPSocket::new(None, true);

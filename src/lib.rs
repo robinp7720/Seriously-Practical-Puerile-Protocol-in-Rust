@@ -4,13 +4,12 @@
 extern crate hex_literal;
 extern crate lazy_static;
 
-mod connection;
-mod connection_manager;
-mod connection_reliability_sender;
-mod connection_security;
-mod constants;
-mod cookie;
-mod packet;
+use std::io::Error;
+use std::net::{ToSocketAddrs, UdpSocket};
+use std::sync::mpsc::{Receiver, TryRecvError};
+use std::sync::{Arc, Mutex};
+use std::thread;
+use std::time::Duration;
 
 use connection::Connection;
 
@@ -19,12 +18,14 @@ use crate::connection_manager::ConnectionManager;
 use crate::connection_security::{Security, SecurityState};
 use crate::constants::MAX_PAYLOAD_SIZE;
 use crate::ConnectionState::CloseWait;
-use std::io::Error;
-use std::net::{ToSocketAddrs, UdpSocket};
-use std::sync::mpsc::{Receiver, TryRecvError};
-use std::sync::{Arc, Mutex};
-use std::thread;
-use std::time::Duration;
+
+mod connection;
+mod connection_manager;
+mod connection_reliability_sender;
+mod connection_security;
+mod constants;
+mod cookie;
+mod packet;
 
 /// SPPP Connection object handling one connection to a peer or server.
 /// This object is returned to the program SPPPSocket::accept, SPPPSocket::listen.

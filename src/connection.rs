@@ -1,9 +1,3 @@
-use crate::connection_reliability_sender::ConnectionReliabilitySender;
-use crate::connection_security::Security;
-use crate::constants::{MAX_PACKET_SIZE, MAX_PAYLOAD_SIZE, RECEIVE_WINDOW_SIZE, TIME_WAIT_TIMEOUT};
-use crate::cookie::ConnectionCookie;
-use crate::packet::{Packet, PacketFlags, PrimaryHeader, SignatureHeader};
-use crate::SecurityState;
 use std::collections::{HashMap, VecDeque};
 use std::net::{SocketAddr, UdpSocket};
 use std::sync::mpsc::{channel, Receiver, Sender};
@@ -11,6 +5,13 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::SystemTime;
 use std::u32::MAX;
+
+use crate::connection_reliability_sender::ConnectionReliabilitySender;
+use crate::connection_security::Security;
+use crate::constants::{MAX_PACKET_SIZE, MAX_PAYLOAD_SIZE, RECEIVE_WINDOW_SIZE, TIME_WAIT_TIMEOUT};
+use crate::cookie::ConnectionCookie;
+use crate::packet::{Packet, PacketFlags, PrimaryHeader, SignatureHeader};
+use crate::SecurityState;
 
 #[derive(Eq, PartialEq, Copy, Clone, Debug)]
 pub enum ConnectionState {
@@ -809,9 +810,10 @@ impl Drop for Connection {
 
 #[cfg(test)]
 mod packet {
+    use std::net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket};
+
     use crate::connection::Connection;
     use crate::packet::{Packet, PacketFlags, PrimaryHeader};
-    use std::net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket};
 
     //#[test]
     pub fn append_to_send_queue() {

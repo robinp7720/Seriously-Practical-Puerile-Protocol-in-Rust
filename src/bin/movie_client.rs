@@ -1,5 +1,6 @@
-use spppsocketredo::SPPPSocket;
 use std::io::Write;
+
+use spppsocketredo::SPPPSocket;
 
 fn main() {
     let mut socket = SPPPSocket::new(None, true);

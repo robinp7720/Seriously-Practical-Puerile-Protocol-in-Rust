@@ -1,8 +1,9 @@
-use spppsocketredo::SPPPSocket;
 use std::fs::File;
 use std::io::{Read, Write};
 use std::thread;
 use std::time::Duration;
+
+use spppsocketredo::SPPPSocket;
 
 fn main() {
     let socket = SPPPSocket::new(Some(2031), true);

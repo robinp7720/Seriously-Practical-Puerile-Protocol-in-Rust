@@ -1,5 +1,6 @@
-use crate::connection_security::{EncryptionType, SignatureType};
 use std::io::Error;
+
+use crate::connection_security::{EncryptionType, SignatureType};
 
 #[derive(Debug)]
 pub struct PrimaryHeader {

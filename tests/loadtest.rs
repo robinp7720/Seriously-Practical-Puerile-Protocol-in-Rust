@@ -1,7 +1,9 @@
-use rand::Rng;
-use spppsocketredo::SPPPSocket;
 use std::fmt::format;
 use std::thread;
+
+use rand::Rng;
+
+use spppsocketredo::SPPPSocket;
 
 const IP: &str = "127.0.0.1";
 const PORT: u16 = 2060;
