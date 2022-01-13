@@ -1,8 +1,10 @@
-use crate::constants::CONNECTION_COOKIE_HMAC_KEY;
-use hmac::{Hmac, Mac};
-use sha3::Sha3_256;
 use std::net::{IpAddr, SocketAddr};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+use hmac::{Hmac, Mac};
+use sha3::Sha3_256;
+
+use crate::constants::CONNECTION_COOKIE_HMAC_KEY;
 
 #[derive(Debug)]
 pub struct ConnectionCookie {

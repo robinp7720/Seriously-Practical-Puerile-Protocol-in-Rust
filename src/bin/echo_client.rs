@@ -1,9 +1,10 @@
-use spppsocketredo::SPPPSocket;
 use std::io::{self, BufRead};
 use std::sync::mpsc::Receiver;
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 use std::time::Duration;
+
+use spppsocketredo::SPPPSocket;
 
 // see here: https://stackoverflow.com/questions/30012995/how-can-i-read-non-blocking-from-stdin
 fn create_stdin_channel() -> Receiver<String> {

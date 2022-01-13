@@ -1,13 +1,14 @@
-use crate::connection::Connection;
-use crate::constants::MAX_PACKET_SIZE;
-use crate::packet::Packet;
-use crate::ConnectionState;
 use std::collections::HashMap;
 use std::io::Error;
 use std::net::{ToSocketAddrs, UdpSocket};
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::thread;
+
+use crate::connection::Connection;
+use crate::constants::MAX_PACKET_SIZE;
+use crate::packet::Packet;
+use crate::ConnectionState;
 
 pub struct ConnectionManager {
     connections: Arc<Mutex<HashMap<u32, Arc<Mutex<Connection>>>>>,
