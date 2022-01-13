@@ -6,16 +6,12 @@ stages:
 fmt:
   image: rustdocker/rust:nightly
   stage: format
-  tags:
-    - privileged
   script:
     - cargo fmt --check
 
 tests:
   image: rustdocker/rust:nightly
   stage: test
-  tags:
-    - privileged
   script:
     - apt-get update
     - apt-get install libssl-dev -y
