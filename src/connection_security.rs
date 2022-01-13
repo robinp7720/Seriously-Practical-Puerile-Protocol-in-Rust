@@ -97,7 +97,7 @@ impl Security {
                 .unwrap()
                 .as_millis()
                 + 1_000_000_000, // this timestamp is in the future, so key_expired always returns false
-            lifetime: Duration::from_secs(3600), // Defaults to 1h
+            lifetime: Duration::from_secs(60 * 1000), // Defaults to 1h
         }
     }
 
@@ -537,6 +537,8 @@ impl Security {
         }
 
         let valid_signature = self.sign_packet(bytes.to_vec(), is_client);
+
+        println!("{:?}", valid_signature);
 
         (bytes, valid_signature)
     }
