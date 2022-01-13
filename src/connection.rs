@@ -428,12 +428,9 @@ impl Connection {
         // Therefor we should set the connection id when we receive an init ack
         self.connection_id = packet.get_connection_id();
 
-        // The init ack also contains the cookie
-        self.cookie = Some(ConnectionCookie::from_bytes(packet.get_payload()));
-
         self.handle_ack(packet);
 
-        self.send_cookie_echo();
+        self.send_cookie_echo(packet.get_payload());
     }
 
     fn send_reset(&mut self) {
@@ -658,9 +655,7 @@ impl Connection {
         self.send_packet(packet);
     }
 
-    pub fn send_cookie_echo(&mut self) {
-        let cookie = self.cookie.as_ref().unwrap();
-
+    pub fn send_cookie_echo(&mut self, cookie: Vec<u8>) {
         let mut flags = PacketFlags::new(0);
         flags.cookie = true;
 
@@ -668,7 +663,7 @@ impl Connection {
             PrimaryHeader::new(self.connection_id, 0, 0, 0, flags),
             None,
             None,
-            cookie.to_bytes(true),
+            cookie,
         );
 
         self.set_connection_state(ConnectionState::CookieEchoed);
