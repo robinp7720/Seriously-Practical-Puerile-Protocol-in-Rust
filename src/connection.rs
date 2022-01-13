@@ -10,6 +10,7 @@ use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::SystemTime;
+use std::u32::MAX;
 
 #[derive(Eq, PartialEq, Copy, Clone, Debug)]
 pub enum ConnectionState {
@@ -121,14 +122,19 @@ impl Connection {
         self.reliable_sender
             .update_local_arwnd(self.total_buffer_size());
 
-        let mut packet_expected =
-            packet.get_sequence_number() >= self.next_expected_sequence_number;
+        let mut packet_expected = self.check_a_after_b(
+            packet.get_sequence_number(),
+            self.next_expected_sequence_number,
+        );
 
         // HANDLE INIT ACK packets
         if packet.is_ack() && packet.is_init() {
             if packet.get_sequence_number() == self.next_expected_sequence_number {
+                /*self.next_expected_sequence_number =
+                packet.get_sequence_number() + packet.payload_size() as u32;*/
                 self.next_expected_sequence_number =
-                    packet.get_sequence_number() + packet.payload_size() as u32;
+                    ((packet.get_sequence_number() as u64 + packet.payload_size() as u64) as u64
+                        % 2u64.pow(32)) as u32;
             }
 
             self.handle_init_ack(&packet);
@@ -142,7 +148,8 @@ impl Connection {
         if packet.is_cookie() && !packet.is_ack() {
             if packet.get_sequence_number() == self.next_expected_sequence_number {
                 self.next_expected_sequence_number =
-                    packet.get_sequence_number() + packet.payload_size() as u32;
+                    ((packet.get_sequence_number() as u64 + packet.payload_size() as u64) as u64
+                        % 2u64.pow(32)) as u32;
             }
 
             self.handle_cookie_echo(packet);
@@ -206,6 +213,15 @@ impl Connection {
 
     pub fn insert_in_order(&mut self, packet: Packet) {
         let mut incoming = self.incoming.lock().unwrap();
+        /*        if incoming.len() == 0 {
+            self.internal_buffer += packet.payload_size();
+            incoming.push_back(packet);
+            return;
+        }
+        let oldest_packet_in_queue = match self.incoming.lock().unwrap().front() {
+            Some(p) => p.get_sequence_number(),
+            _ => panic!(),
+        };*/
 
         for (i, cur) in incoming.iter().enumerate() {
             // If we received a duplicate packet,
@@ -218,7 +234,7 @@ impl Connection {
                 return;
             }
 
-            if cur.get_sequence_number() > packet.get_sequence_number() {
+            if !self.check_a_after_b(packet.get_sequence_number(), cur.get_sequence_number()) {
                 self.internal_buffer += packet.payload_size();
                 incoming.insert(i, packet);
 
@@ -228,6 +244,21 @@ impl Connection {
 
         self.internal_buffer += packet.payload_size();
         incoming.push_back(packet);
+    }
+
+    fn check_a_after_b(&self, seq_num_a: u32, seq_num_b: u32) -> bool {
+        if self.next_expected_sequence_number
+            > (RECEIVE_WINDOW_SIZE as usize * MAX_PAYLOAD_SIZE) as u32
+        {
+            let threshold = self.next_expected_sequence_number as usize
+                - (RECEIVE_WINDOW_SIZE as usize * MAX_PAYLOAD_SIZE);
+
+            if (seq_num_a as usize) < threshold {
+                return (seq_num_a as u64) + (u32::MAX as u64) >= seq_num_b as u64;
+            }
+        }
+
+        return seq_num_a >= seq_num_b;
     }
 
     pub fn insert_packet_incoming_queue(&mut self, packet: Packet) {
@@ -247,7 +278,10 @@ impl Connection {
 
                 let next_packet = incoming.pop_front().unwrap();
 
-                self.next_expected_sequence_number += next_packet.payload_size() as u32;
+                self.next_expected_sequence_number = ((self.next_expected_sequence_number as u64
+                    + next_packet.payload_size() as u64)
+                    as u64
+                    % 2u64.pow(32)) as u32;
                 self.internal_buffer -= next_packet.payload_size();
 
                 if next_packet.is_sec() {
@@ -532,7 +566,9 @@ impl Connection {
             }
         }
 
-        self.current_send_sequence_number += packet.payload_size() as u32;
+        self.current_send_sequence_number = ((self.current_send_sequence_number as u64
+            + packet.payload_size() as u64) as u64
+            % 2u64.pow(32)) as u32;
 
         self.reliable_sender.send_packet(packet);
 

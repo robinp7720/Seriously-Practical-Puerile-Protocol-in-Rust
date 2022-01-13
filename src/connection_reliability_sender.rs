@@ -111,7 +111,9 @@ impl CongestionHandler {
     }
 
     pub fn append_to_window(&self, seq_num: u32) {
-        self.window.lock().unwrap().push_back(seq_num);
+        if !self.window.lock().unwrap().contains(&seq_num) {
+            self.window.lock().unwrap().push_back(seq_num);
+        }
     }
 }
 
@@ -287,8 +289,7 @@ impl ConnectionReliabilitySender {
                 /*let mut rng = rand::thread_rng();
                 let y: f64 = rng.gen();
 
-                if y < 0.95 {*/
-
+                if y < 0.90 {*/
                 *congestion_handler.last_packet_send.lock().unwrap() = SystemTime::now();
                 match socket.send_to(&*packet.to_bytes(), addr) {
                     Ok(_) => {}
