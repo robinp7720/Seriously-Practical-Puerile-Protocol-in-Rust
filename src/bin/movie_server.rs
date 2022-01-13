@@ -5,7 +5,7 @@ use std::thread;
 use std::time::Duration;
 
 fn main() {
-    let socket = SPPPSocket::new(Some(2031));
+    let socket = SPPPSocket::new(Some(2031), true);
     let chunk_size = 1200;
 
     loop {

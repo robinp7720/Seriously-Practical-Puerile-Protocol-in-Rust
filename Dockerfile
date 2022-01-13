@@ -19,4 +19,4 @@ COPY ./certificates/DO_NOT_USE.crt ./certificates/server.crt
 
 RUN chmod +x ./configure_interface.sh
 
-CMD ./configure_interface.sh; cargo test --release
+CMD ./configure_interface.sh; cargo test --release -- --nocapture

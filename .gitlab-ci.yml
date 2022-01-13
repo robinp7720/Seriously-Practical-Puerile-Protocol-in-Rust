@@ -21,7 +21,7 @@ tests:
     - apt-get install libssl-dev -y
     - mv -f ./certificates/DO_NOT_USE.key ./certificates/server.key
     - mv -f ./certificates/DO_NOT_USE.crt ./certificates/server.crt
-    - cargo test
+    - cargo test --release -- --nocapture
 
 network_test:
   image: rustdocker/rust:nightly
@@ -35,4 +35,4 @@ network_test:
     - mv -f ./certificates/DO_NOT_USE.crt ./certificates/server.crt
     - chmod +x ./tests/realistic_network/configure_interface.sh
     - ./tests/realistic_network/configure_interface.sh
-    - cargo test --release
+    - cargo test --release -- --nocapture

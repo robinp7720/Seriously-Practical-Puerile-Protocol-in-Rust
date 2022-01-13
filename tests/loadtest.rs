@@ -33,14 +33,14 @@ fn big_load_integration() {
 }
 
 fn client(message: String) {
-    let mut socket = SPPPSocket::new(None);
+    let mut socket = SPPPSocket::new(None, true);
     let mut con = socket.connect(format!("{}:{}", IP, PORT)).unwrap();
 
     con.send(Vec::from(message.as_bytes()));
 }
 
 fn server(message: &[u8]) {
-    let socket = SPPPSocket::new(Some(PORT));
+    let socket = SPPPSocket::new(Some(PORT), true);
 
     let mut connection = socket.accept().unwrap();
 

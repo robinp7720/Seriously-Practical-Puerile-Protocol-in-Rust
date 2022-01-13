@@ -147,6 +147,7 @@ impl Drop for SPPPConnection {
 
 pub struct SPPPSocket {
     connection_manager: ConnectionManager,
+    enable_encryption: bool,
 }
 
 impl SPPPSocket {
@@ -159,7 +160,7 @@ impl SPPPSocket {
     ///
     /// # Returns
     /// Returns the SPPPSocket object for the calling program to interact with.
-    pub fn new(port: Option<u16>) -> Self {
+    pub fn new(port: Option<u16>, enable_encryption: bool) -> Self {
         let socket = match port {
             None => UdpSocket::bind("0.0.0.0:0").unwrap(),
             Some(port) => UdpSocket::bind(format!("0.0.0.0:{}", port)).unwrap(),
@@ -167,11 +168,15 @@ impl SPPPSocket {
 
         eprintln!("{}", socket.local_addr().unwrap().port());
 
-        let connection_manager = connection_manager::ConnectionManager::new(socket);
+        let connection_manager =
+            connection_manager::ConnectionManager::new(socket, enable_encryption);
 
         connection_manager.start();
 
-        SPPPSocket { connection_manager }
+        SPPPSocket {
+            connection_manager,
+            enable_encryption,
+        }
     }
 
     /*pub fn listen(&self, queue_length: usize, whitelist: Option<Vec<IpAddr>>) -> Result<(), Error> {
@@ -191,36 +196,41 @@ impl SPPPSocket {
 
         while connection.lock().unwrap().get_connection_state() != ConnectionState::Established {}
 
-        // wait till agree on algorithms is completed
-        loop {
-            {
-                if connection.lock().unwrap().security.algos_set() {
-                    break;
+        if self.enable_encryption {
+            eprintln!("Starting security");
+
+            // wait till agree on algorithms is completed
+            loop {
+                {
+                    if connection
+                        .lock()
+                        .unwrap()
+                        .security
+                        .algorithm_negotiation_finished()
+                    {
+                        break;
+                    }
                 }
+                // TODO update this to a channel
+                thread::sleep(Duration::from_millis(10));
             }
-            // TODO update this to a channel
-            thread::sleep(Duration::from_millis(100));
-        }
 
-        eprintln!("Start DH");
+            eprintln!("Start DH");
 
-        {
-            connection.lock().unwrap().security.state = SecurityState::ExchangeKeys;
-        }
-
-        // wait till master secret is set
-        loop {
             {
-                if connection.lock().unwrap().security.master_secret_set() {
-                    break;
-                }
+                connection.lock().unwrap().security.state = SecurityState::ExchangeKeys;
             }
-            // TODO update this to a channel
-            thread::sleep(Duration::from_millis(100));
-        }
 
-        {
-            connection.lock().unwrap().security.state = SecurityState::Secured;
+            // wait till master secret is set
+            loop {
+                {
+                    if connection.lock().unwrap().security.master_secret_set() {
+                        break;
+                    }
+                }
+                // TODO update this to a channel
+                thread::sleep(Duration::from_millis(10));
+            }
         }
 
         eprintln!("Connected");
@@ -249,57 +259,49 @@ impl SPPPSocket {
         eprintln!("Waiting for connection to be established");
         while connection.lock().unwrap().get_connection_state() != ConnectionState::Established {}
 
-        eprintln!("Starting security");
-        // At this point the connection is established and we need to
+        if self.enable_encryption {
+            eprintln!("Starting security");
 
-        {
-            // send packets for algorithm agreement and certificate exchange
-
-            let mut connection = connection.lock().unwrap();
-            let packets = connection.security.agree_on_algorithms_client();
-
-            for mut packet in packets {
-                packet.set_connection_id(connection.get_connection_id());
-                connection.send_packet(packet);
-            }
-        }
-
-        // wait till agree on algorithms is completed
-        loop {
             {
-                if connection.lock().unwrap().security.algos_set() {
-                    break;
+                // send packets for algorithm agreement and certificate exchange
+
+                let mut connection = connection.lock().unwrap();
+                let packets = connection.security.agree_on_algorithms_client();
+
+                for mut packet in packets {
+                    packet.set_connection_id(connection.get_connection_id());
+                    connection.send_packet(packet);
                 }
             }
-            // TODO update this to a channel
-            thread::sleep(Duration::from_millis(100));
-        }
 
-        // TODO certificates
-
-        eprintln!("Start DH");
-
-        {
-            let mut connection = connection.lock().unwrap();
-            connection.security.state = SecurityState::ExchangeKeys;
-            let mut dh_packet = connection.security.start_exchange_keys_client();
-            dh_packet.set_connection_id(connection.get_connection_id());
-            connection.send_packet(dh_packet);
-        }
-
-        // wait till master secret is set
-        loop {
-            {
-                if connection.lock().unwrap().security.master_secret_set() {
-                    break;
+            // wait till agree on algorithms is completed
+            loop {
+                {
+                    if connection
+                        .lock()
+                        .unwrap()
+                        .security
+                        .algorithm_negotiation_finished()
+                    {
+                        break;
+                    }
                 }
+                // TODO update this to a channel
+                thread::sleep(Duration::from_millis(10));
             }
-            // TODO update this to a channel
-            thread::sleep(Duration::from_millis(100));
-        }
 
-        {
-            connection.lock().unwrap().security.state = SecurityState::Secured;
+            eprintln!("Start DH");
+
+            // wait till master secret is set
+            loop {
+                {
+                    if connection.lock().unwrap().security.master_secret_set() {
+                        break;
+                    }
+                }
+                // TODO update this to a channel
+                thread::sleep(Duration::from_millis(10));
+            }
         }
 
         eprintln!("Connected");

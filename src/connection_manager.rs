@@ -13,14 +13,16 @@ pub struct ConnectionManager {
     connections: Arc<Mutex<HashMap<u32, Arc<Mutex<Connection>>>>>,
     connection_queue: Arc<Mutex<Vec<u32>>>,
     socket: UdpSocket,
+    encryption_enabled: bool,
 }
 
 impl ConnectionManager {
-    pub fn new(socket: UdpSocket) -> Self {
+    pub fn new(socket: UdpSocket, encryption_enabled: bool) -> Self {
         ConnectionManager {
             socket,
             connections: Arc::new(Mutex::new(HashMap::new())),
             connection_queue: Arc::new(Mutex::new(Vec::new())),
+            encryption_enabled,
         }
     }
 
@@ -33,6 +35,8 @@ impl ConnectionManager {
 
         let connection_queue = Arc::clone(&self.connection_queue);
         let connections = Arc::clone(&self.connections);
+
+        let encryption_enabled = self.encryption_enabled;
 
         // Listening thread
         thread::spawn(move || loop {
@@ -57,8 +61,13 @@ impl ConnectionManager {
                 if packet.get_connection_id() == 0 && packet.is_init() {
                     let connection_id: u32 = rand::random();
 
-                    let mut connection =
-                        Connection::new(src, socket.try_clone().unwrap(), connection_id, false);
+                    let mut connection = Connection::new(
+                        src,
+                        socket.try_clone().unwrap(),
+                        connection_id,
+                        false,
+                        encryption_enabled,
+                    );
 
                     connection.send_init_ack();
 
@@ -162,6 +171,7 @@ impl ConnectionManager {
             self.socket.try_clone().unwrap(),
             0,
             true,
+            self.encryption_enabled,
         )));
 
         self.connections
