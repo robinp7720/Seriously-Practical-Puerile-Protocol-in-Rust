@@ -191,6 +191,16 @@ impl Connection {
         let mut incoming = self.incoming.lock().unwrap();
 
         for (i, cur) in incoming.iter().enumerate() {
+            // If we received a duplicate packet,
+            // we should replace the old packet with the same sequence number with the new one
+            if cur.get_sequence_number() == packet.get_sequence_number() {
+                self.internal_buffer -= cur.payload_size();
+                self.internal_buffer += packet.payload_size();
+
+                incoming[i] = packet;
+                return;
+            }
+
             if cur.get_sequence_number() > packet.get_sequence_number() {
                 self.internal_buffer += packet.payload_size();
                 incoming.insert(i, packet);
