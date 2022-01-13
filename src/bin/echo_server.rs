@@ -9,7 +9,7 @@ fn main() {
 
         thread::spawn(move || loop {
             let data = connection.recv().unwrap();
-            //println!("{:?}", data);
+            println!("{}", std::str::from_utf8(&*data).unwrap());
             connection.send(data);
         });
     }
