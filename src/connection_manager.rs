@@ -68,6 +68,7 @@ impl ConnectionManager {
                         connection_id,
                         false,
                         encryption_enabled,
+                        packet.get_sequence_number(),
                     );
 
                     connection.send_init_ack();
@@ -173,6 +174,7 @@ impl ConnectionManager {
             0,
             true,
             self.encryption_enabled,
+            0,
         )));
 
         self.connections

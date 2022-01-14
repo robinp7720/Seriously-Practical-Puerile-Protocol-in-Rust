@@ -1,14 +1,13 @@
-use std::collections::{HashMap, VecDeque};
+use rand::Rng;
+use std::collections::VecDeque;
 use std::net::{SocketAddr, UdpSocket};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::SystemTime;
-use std::u32::MAX;
 
 use crate::connection_reliability_sender::ConnectionReliabilitySender;
 use crate::connection_security::Security;
-use crate::constants::{MAX_PACKET_SIZE, MAX_PAYLOAD_SIZE, RECEIVE_WINDOW_SIZE, TIME_WAIT_TIMEOUT};
+use crate::constants::{MAX_PAYLOAD_SIZE, RECEIVE_WINDOW_SIZE, TIME_WAIT_TIMEOUT};
 use crate::cookie::ConnectionCookie;
 use crate::packet::{Packet, PacketFlags, PrimaryHeader, SignatureHeader};
 use crate::SecurityState;
@@ -68,7 +67,10 @@ impl Connection {
         connection_id: u32,
         is_client: bool,
         is_encrypted: bool,
+        next_expected_sequence_number: u32,
     ) -> Connection {
+        let mut rng = rand::thread_rng();
+
         Connection {
             reliable_sender: ConnectionReliabilitySender::new(
                 addr.clone(),
@@ -82,8 +84,8 @@ impl Connection {
 
             connection_state: Arc::new(Mutex::new(ConnectionState::Closed)),
             cookie: None,
-            current_send_sequence_number: 0,
-            next_expected_sequence_number: 0,
+            current_send_sequence_number: rng.gen(),
+            next_expected_sequence_number,
             receive_channel: None,
 
             internal_buffer: 0,
@@ -130,13 +132,9 @@ impl Connection {
 
         // HANDLE INIT ACK packets
         if packet.is_ack() && packet.is_init() {
-            if packet.get_sequence_number() == self.next_expected_sequence_number {
-                /*self.next_expected_sequence_number =
-                packet.get_sequence_number() + packet.payload_size() as u32;*/
-                self.next_expected_sequence_number =
-                    ((packet.get_sequence_number() as u64 + packet.payload_size() as u64) as u64
-                        % 2u64.pow(32)) as u32;
-            }
+            self.next_expected_sequence_number =
+                ((packet.get_sequence_number() as u64 + packet.payload_size() as u64) as u64
+                    % 2u64.pow(32)) as u32;
 
             self.handle_init_ack(&packet);
 
@@ -214,15 +212,6 @@ impl Connection {
 
     pub fn insert_in_order(&mut self, packet: Packet) {
         let mut incoming = self.incoming.lock().unwrap();
-        /*        if incoming.len() == 0 {
-            self.internal_buffer += packet.payload_size();
-            incoming.push_back(packet);
-            return;
-        }
-        let oldest_packet_in_queue = match self.incoming.lock().unwrap().front() {
-            Some(p) => p.get_sequence_number(),
-            _ => panic!(),
-        };*/
 
         for (i, cur) in incoming.iter().enumerate() {
             // If we received a duplicate packet,
@@ -249,10 +238,10 @@ impl Connection {
 
     fn check_a_after_b(&self, seq_num_a: u32, seq_num_b: u32) -> bool {
         if self.next_expected_sequence_number
-            > (RECEIVE_WINDOW_SIZE as usize * MAX_PAYLOAD_SIZE) as u32
+            > ((RECEIVE_WINDOW_SIZE as usize * 10) * MAX_PAYLOAD_SIZE) as u32
         {
             let threshold = self.next_expected_sequence_number as usize
-                - (RECEIVE_WINDOW_SIZE as usize * MAX_PAYLOAD_SIZE);
+                - ((RECEIVE_WINDOW_SIZE as usize * 10) * MAX_PAYLOAD_SIZE);
 
             if (seq_num_a as usize) < threshold {
                 return (seq_num_a as u64) + (u32::MAX as u64) >= seq_num_b as u64;
@@ -813,7 +802,7 @@ mod packet {
     //#[test]
     pub fn append_to_send_queue() {
         let addr = SocketAddr::new(IpAddr::from(Ipv4Addr::new(0, 0, 0, 0)), 1200);
-        let mut con = Connection::new(addr, UdpSocket::bind(addr).unwrap(), 0, true, false);
+        let mut con = Connection::new(addr, UdpSocket::bind(addr).unwrap(), 0, true, false, 0);
 
         let rx = con.register_receive_channel();
 
