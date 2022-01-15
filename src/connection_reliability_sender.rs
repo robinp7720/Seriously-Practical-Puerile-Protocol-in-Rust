@@ -5,7 +5,7 @@ use std::collections::VecDeque;
 use std::net::{SocketAddr, UdpSocket};
 use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU32, AtomicU64, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 use std::thread;
 use std::thread::JoinHandle;
 use std::time::{Duration, SystemTime};
@@ -117,7 +117,7 @@ pub struct ConnectionReliabilitySender {
     in_transit: Arc<Mutex<HashMap<PacketRetransmit, TransitStatus>>>,
     in_transit_queue_tx: Sender<TimeoutPacket>,
     socket: UdpSocket,
-    addr: SocketAddr,
+    addr: Arc<RwLock<SocketAddr>>,
     sending_queue_tx: Sender<Packet>,
 
     // Smoothed Round Trip Time in milliseconds
@@ -142,7 +142,7 @@ pub struct ConnectionReliabilitySender {
 }
 
 impl ConnectionReliabilitySender {
-    pub fn new(addr: SocketAddr, socket: UdpSocket) -> Self {
+    pub fn new(addr: Arc<RwLock<SocketAddr>>, socket: UdpSocket) -> Self {
         let in_transit = Arc::new(Mutex::new(HashMap::new()));
 
         let (sending_queue_tx, sending_queue_rx) = channel::<Packet>();
@@ -266,7 +266,7 @@ impl ConnectionReliabilitySender {
         sending_queue_rx: Receiver<Packet>,
         in_transit: Arc<Mutex<HashMap<PacketRetransmit, TransitStatus>>>,
         in_transit_queue: Sender<TimeoutPacket>,
-        addr: SocketAddr,
+        addr_container: Arc<RwLock<SocketAddr>>,
         socket: UdpSocket,
         curr_rto: Arc<AtomicU64>,
         arwnd: Arc<AtomicU16>,
@@ -281,6 +281,9 @@ impl ConnectionReliabilitySender {
                 packet.set_arwnd(arwnd);
 
                 *congestion_handler.last_packet_send.lock().unwrap() = SystemTime::now();
+
+                let addr = *addr_container.read().unwrap();
+
                 match socket.send_to(&*packet.to_bytes(), addr) {
                     Ok(_) => {}
                     Err(_) => {

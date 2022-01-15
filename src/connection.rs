@@ -2,7 +2,7 @@ use rand::Rng;
 use std::collections::VecDeque;
 use std::net::{SocketAddr, UdpSocket};
 use std::sync::mpsc::{channel, Receiver, Sender};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 use std::thread;
 
 use crate::connection_reliability_sender::ConnectionReliabilitySender;
@@ -36,7 +36,7 @@ pub enum PacketRetransmit {
 }
 
 pub struct Connection {
-    addr: SocketAddr,
+    addr: Arc<RwLock<SocketAddr>>,
     connection_id: u32,
     socket: UdpSocket,
     incoming: Mutex<VecDeque<Packet>>,
@@ -70,14 +70,15 @@ impl Connection {
         next_expected_sequence_number: u32,
     ) -> Connection {
         let mut rng = rand::thread_rng();
+        let addr_container = Arc::new(RwLock::new(addr));
 
         Connection {
             reliable_sender: ConnectionReliabilitySender::new(
-                addr.clone(),
+                addr_container.clone(),
                 socket.try_clone().unwrap(),
             ),
             security: Security::new(),
-            addr,
+            addr: addr_container,
             connection_id,
             socket,
             incoming: Mutex::new(VecDeque::new()),
@@ -110,7 +111,7 @@ impl Connection {
     pub fn start_receive_thread(&self) {}
 
     pub fn verify_cookie(&self, cookie: &ConnectionCookie) -> bool {
-        if cookie.source_addr != self.addr
+        if cookie.source_addr != self.get_addr()
             || cookie.connection_id != self.cookie.as_ref().unwrap().connection_id
             || cookie.hmac != self.cookie.as_ref().unwrap().hmac
         {
@@ -120,7 +121,13 @@ impl Connection {
         true
     }
 
-    pub fn receive_packet(&mut self, mut packet: Packet) {
+    pub fn receive_packet(&mut self, mut packet: Packet, src: SocketAddr) {
+        if *self.addr.read().unwrap() != src {
+            eprintln!("Destination has changed source");
+            let mut addr = self.addr.write().unwrap();
+            *addr = src;
+        }
+
         self.reliable_sender.update_remote_arwnd(packet.get_arwnd());
         self.reliable_sender
             .update_local_arwnd(self.total_buffer_size());
@@ -632,7 +639,7 @@ impl Connection {
         flags.ack = true;
 
         // sign cookie and save MAC
-        self.cookie = Some(ConnectionCookie::new(self.addr, self.connection_id));
+        self.cookie = Some(ConnectionCookie::new(self.get_addr(), self.connection_id));
 
         let packet = Packet::new(
             PrimaryHeader::new(self.connection_id, 0, 0, 0, flags),
@@ -758,7 +765,7 @@ impl Connection {
     }
 
     pub fn get_addr(&self) -> SocketAddr {
-        self.addr
+        *self.addr.read().unwrap()
     }
 
     pub fn get_connection_id(&self) -> u32 {
