@@ -139,7 +139,7 @@ impl ConnectionManager {
                         continue;
                     }
                     Some(connection) => {
-                        connection.lock().unwrap().receive_packet(packet);
+                        connection.lock().unwrap().receive_packet(packet, src);
                     }
                 };
             }
