@@ -1,19 +1,17 @@
 use std::cmp::{max, min};
 use std::collections::HashMap;
-use std::collections::LinkedList;
+
 use std::collections::VecDeque;
 use std::net::{SocketAddr, UdpSocket};
-use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU16, AtomicU32, AtomicU64, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Mutex, RwLock};
 use std::thread;
 use std::thread::JoinHandle;
 use std::time::{Duration, SystemTime};
 
-use rand::prelude::*;
-
 use crate::connection::PacketRetransmit;
-use crate::connection_reliability_sender::CongestionPhase::{CongestionAvoidance, FastProbing};
+
 use crate::constants::{
     CLOCK_GRANULARITY, CONNECTION_IDLE_TIME, INITIAL_RETRANSMISSION_TIMEOUT, MAX_PACKET_SIZE,
     MAX_PAYLOAD_SIZE, RECEIVE_WINDOW_SIZE,
@@ -53,7 +51,7 @@ pub struct CongestionHandler {
 
 impl CongestionHandler {
     pub fn cwnd_packet_loss(&self, seq_num: u32) {
-        let mut window_lock = self.window.lock().unwrap();
+        let window_lock = self.window.lock().unwrap();
 
         // last sequence number
         let x = match window_lock.back() {
@@ -73,17 +71,18 @@ impl CongestionHandler {
         self.cwnd
             .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |x| {
                 Some(self.halve_to_min(x))
-            });
+            })
+            .expect("Could not halve cwnd");
 
         *self.congestion_phase.lock().unwrap() = CongestionPhase::CongestionAvoidance;
     }
 
     fn halve_to_min(&self, x: u64) -> u64 {
         let y = x / 2;
-        if y > 1 * MAX_PACKET_SIZE as u64 {
+        if y > MAX_PACKET_SIZE as u64 {
             return y;
         }
-        return 1 * MAX_PACKET_SIZE as u64;
+        MAX_PACKET_SIZE as u64
     }
 
     pub fn get_congestion_phase(&self) -> CongestionPhase {
@@ -115,9 +114,7 @@ impl CongestionHandler {
 
 pub struct ConnectionReliabilitySender {
     in_transit: Arc<Mutex<HashMap<PacketRetransmit, TransitStatus>>>,
-    in_transit_queue_tx: Sender<TimeoutPacket>,
-    socket: UdpSocket,
-    addr: Arc<RwLock<SocketAddr>>,
+
     sending_queue_tx: Sender<Packet>,
 
     // Smoothed Round Trip Time in milliseconds
@@ -169,8 +166,8 @@ impl ConnectionReliabilitySender {
         Self::start_send_thread(
             sending_queue_rx,
             in_transit.clone(),
-            in_transit_queue_tx.clone(),
-            addr.clone(),
+            in_transit_queue_tx,
+            addr,
             socket.try_clone().unwrap(),
             curr_rto.clone(),
             local_arwnd.clone(),
@@ -195,15 +192,11 @@ impl ConnectionReliabilitySender {
 
         ConnectionReliabilitySender {
             in_transit,
-            in_transit_queue_tx,
             sending_queue_tx,
 
             flow_sender_tx,
 
             flow_thread_handle,
-
-            socket,
-            addr,
 
             srtt: 0,
             rttvar: 0,
@@ -258,10 +251,13 @@ impl ConnectionReliabilitySender {
             in_flight.fetch_add(1, Ordering::Relaxed);
             queued_for_flight.fetch_sub(1, Ordering::Relaxed);
 
-            sending_queue_tx.send(packet);
+            sending_queue_tx
+                .send(packet)
+                .expect("Could not send packet to sending queue");
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn start_send_thread(
         sending_queue_rx: Receiver<Packet>,
         in_transit: Arc<Mutex<HashMap<PacketRetransmit, TransitStatus>>>,
@@ -323,16 +319,18 @@ impl ConnectionReliabilitySender {
                 in_transit.lock().unwrap().insert(
                     packet_classification,
                     TransitStatus {
-                        send_time: send_time.clone(),
+                        send_time,
                         arrived: false,
                     },
                 );
 
-                in_transit_queue.send(TimeoutPacket {
-                    send_time,
-                    packet,
-                    timeout: Duration::from_millis(curr_rto.load(Ordering::Relaxed)),
-                });
+                in_transit_queue
+                    .send(TimeoutPacket {
+                        send_time,
+                        packet,
+                        timeout: Duration::from_millis(curr_rto.load(Ordering::Relaxed)),
+                    })
+                    .expect("Colud not send packet to timeout handler");
             }
         });
     }
@@ -341,7 +339,7 @@ impl ConnectionReliabilitySender {
         transit_queue_rx: Receiver<TimeoutPacket>,
         sending_queue_tx: Sender<Packet>,
         in_transit: Arc<Mutex<HashMap<PacketRetransmit, TransitStatus>>>,
-        mut congestion_handler: Arc<CongestionHandler>,
+        congestion_handler: Arc<CongestionHandler>,
     ) {
         thread::spawn(move || loop {
             let current_timeout_packet = transit_queue_rx.recv().unwrap();
@@ -379,7 +377,9 @@ impl ConnectionReliabilitySender {
             if !transit_status.arrived {
                 congestion_handler
                     .cwnd_packet_loss(current_timeout_packet.packet.get_sequence_number());
-                sending_queue_tx.send(current_timeout_packet.packet);
+                sending_queue_tx
+                    .send(current_timeout_packet.packet)
+                    .expect("Could not send packet to sending queue for retransmit");
             }
         });
     }
@@ -387,13 +387,17 @@ impl ConnectionReliabilitySender {
     pub fn send_packet(&mut self, packet: Packet) {
         if packet.is_ack() || packet.is_arwnd() {
             // Don't bother with flow control for ACKs
-            self.sending_queue_tx.send(packet);
+            self.sending_queue_tx
+                .send(packet)
+                .expect("Could not send packet to sending queue");
             return;
         }
 
         self.queued_for_flight.fetch_add(1, Ordering::Relaxed);
 
-        self.flow_sender_tx.send(packet);
+        self.flow_sender_tx
+            .send(packet)
+            .expect("Could not push packet to flow sender queue");
     }
 
     /// Handle a received ack
@@ -430,7 +434,7 @@ impl ConnectionReliabilitySender {
 
             transit_status.arrived = true;
 
-            (duplicate, transit_status.send_time.clone())
+            (duplicate, transit_status.send_time)
         };
 
         self.congestion_handler
@@ -511,9 +515,9 @@ impl ConnectionReliabilitySender {
 
     pub fn can_send(&self) -> bool {
         let remote_arwnd = self.remote_arwnd.load(Ordering::Relaxed) as u64;
-        let in_flight = self.in_flight.load(Ordering::Relaxed) as u64;
+        let _in_flight = self.in_flight.load(Ordering::Relaxed) as u64;
         let queued = self.queued_for_flight.load(Ordering::Relaxed) as u64;
 
-        return remote_arwnd > queued;
+        remote_arwnd > queued
     }
 }

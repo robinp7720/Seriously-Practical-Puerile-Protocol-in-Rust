@@ -1,8 +1,6 @@
-use std::io::{self, BufRead};
+use std::sync::mpsc;
 use std::sync::mpsc::Receiver;
-use std::sync::{mpsc, Arc, Mutex};
-use std::thread;
-use std::time::Duration;
+use std::{io, thread};
 
 use spppsocketredo::SPPPSocket;
 
@@ -29,11 +27,8 @@ fn main() {
             eprintln!("{}", std::str::from_utf8(&*con.recv().unwrap()).unwrap());
         }
 
-        if let line = receiver.try_recv() {
-            if line.is_ok() {
-                let line = line.unwrap();
-                con.send(line.as_bytes().to_vec());
-            }
+        if let Ok(line) = receiver.try_recv() {
+            con.send(line.as_bytes().to_vec());
         }
     }
 }

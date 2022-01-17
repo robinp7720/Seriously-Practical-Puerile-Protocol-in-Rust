@@ -1,7 +1,6 @@
 use std::fs::File;
-use std::io::{Read, Write};
+use std::io::Read;
 use std::thread;
-use std::time::Duration;
 
 use spppsocketredo::SPPPSocket;
 
@@ -10,14 +9,14 @@ fn main() {
     let chunk_size = 1200;
 
     loop {
-        let mut connection = socket.accept().unwrap();
+        let connection = socket.accept().unwrap();
 
         thread::spawn(move || {
             let mut file =
                 File::open("/home/robin/Free.Guy.2021.1080p.HDRip.X264-EVO.mkv").unwrap();
             loop {
                 let mut chunk = vec![0; chunk_size];
-                let mut amt = file.read_exact(&mut chunk).unwrap();
+                let _amt = file.read_exact(&mut chunk).unwrap();
 
                 connection.send(chunk);
 

@@ -1,4 +1,3 @@
-use std::fmt::format;
 use std::thread;
 
 use rand::Rng;
@@ -36,7 +35,7 @@ fn big_load_integration() {
 
 fn client(message: String) {
     let mut socket = SPPPSocket::new(None, true);
-    let mut con = socket.connect(format!("{}:{}", IP, PORT)).unwrap();
+    let con = socket.connect(format!("{}:{}", IP, PORT)).unwrap();
 
     con.send(Vec::from(message.as_bytes()));
 }

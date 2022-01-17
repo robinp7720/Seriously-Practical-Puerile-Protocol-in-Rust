@@ -1,32 +1,29 @@
 use std::path::Path;
-use std::sync::{Arc, Mutex, MutexGuard};
-use std::thread;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use std::{fs, io};
 
-use aes::cipher::generic_array::{typenum::U32, GenericArray};
+use std::fs;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
 use aes::cipher::{NewCipher, StreamCipher};
-use aes::{Aes192Ctr, Aes256Ctr, Block};
-use cipher::generic_array::arr;
-use cipher::{SeekNum, StreamCipherSeek};
+use aes::Aes256Ctr;
+
 use hkdf::Hkdf;
-use hmac::digest::MacError;
+
 use hmac::{Hmac, Mac};
 use lazy_static::lazy_static;
-use num_bigint::{BigInt, BigUint, RandBigInt, Sign};
-use openssl::encrypt::{Decrypter, Encrypter};
+use num_bigint::{BigInt, RandBigInt, Sign};
+
 use openssl::hash::MessageDigest;
-use openssl::pkey::{PKey, Private, Public};
-use openssl::rsa::{Padding, Rsa};
+use openssl::pkey::{PKey, Private};
+
 use openssl::sign::{Signer, Verifier};
-use openssl::x509::{X509VerifyResult, X509};
-use rand::rngs::OsRng;
+use openssl::x509::X509;
+
 use sha3::Sha3_256;
 
 use crate::connection_security::SignatureType::SHA3_256;
 use crate::constants::{DIFFIE_HELLMAN_GENERATOR, DIFFIE_HELLMAN_PRIME};
 use crate::packet::{EncryptionHeader, Packet, PacketFlags, PrimaryHeader, SignatureHeader};
-use crate::{Connection, SPPPConnection, MAX_PAYLOAD_SIZE};
+use crate::MAX_PAYLOAD_SIZE;
 
 #[derive(Debug)]
 pub struct Security {
@@ -203,7 +200,7 @@ impl Security {
         let mut packets = Vec::new();
 
         // there is no common algorithms between the parties
-        if !enc_algo.is_some() || !sig_algo.is_some() {
+        if enc_algo.is_none() || sig_algo.is_none() {
             eprintln!("[ERROR] Could not agree on algorithms!");
 
             let mut flags = PacketFlags::new(0);
@@ -231,8 +228,8 @@ impl Security {
             let primary_header = PrimaryHeader::new(0, 0, 0, 0, flags);
 
             let encryption_header = EncryptionHeader {
-                supported_encryption_algorithms: vec![enc_algo.clone().unwrap()],
-                supported_signature_algorithms: vec![sig_algo.clone().unwrap()],
+                supported_encryption_algorithms: vec![enc_algo.unwrap()],
+                supported_signature_algorithms: vec![sig_algo.unwrap()],
             };
 
             let packet = Packet::new(
@@ -265,7 +262,7 @@ impl Security {
     }
 
     // sign a payload with your private RSA key
-    fn rsa_sign(&self, payload: Vec<u8>, is_client: bool) -> Vec<u8> {
+    fn rsa_sign(&self, payload: Vec<u8>, _is_client: bool) -> Vec<u8> {
         match self.signature_type.unwrap() {
             SHA3_256 => {
                 let mut signer = Signer::new(MessageDigest::sha3_256(), &RSA_PRIVATE_KEY).unwrap();
@@ -287,7 +284,7 @@ impl Security {
                 verifier.update(&payload).unwrap();
 
                 match verifier.verify(&received_signature).unwrap() {
-                    true => return,
+                    true => (),
                     false => panic!("[ERROR] The signature did not match! Therefore we can not verify the others private certificate."),
                 }
             }
@@ -313,7 +310,7 @@ impl Security {
 
         // public key = (generator ^ private_key) mod prime
         self.dh_own_public_key =
-            Some(BigInt::from(generator).modpow(&self.dh_private_key.as_ref().unwrap(), &prime));
+            Some(BigInt::from(generator).modpow(self.dh_private_key.as_ref().unwrap(), &prime));
 
         let mut payload = Vec::new();
 
@@ -359,7 +356,7 @@ impl Security {
             self.dh_other_public_key
                 .as_ref()
                 .unwrap()
-                .modpow(&self.dh_private_key.as_ref().unwrap(), &prime),
+                .modpow(self.dh_private_key.as_ref().unwrap(), &prime),
         );
 
         // set the timestamp to the current time
@@ -388,11 +385,11 @@ impl Security {
 
         // public key = (generator ^ private_key) mod prime
         self.dh_own_public_key =
-            Some(BigInt::from(generator).modpow(&self.dh_private_key.as_ref().unwrap(), &prime));
+            Some(BigInt::from(generator).modpow(self.dh_private_key.as_ref().unwrap(), &prime));
 
         let other_key_length = u16::from_be_bytes([payload[0], payload[1]]);
-        let generator_length = u16::from_be_bytes([payload[2], payload[3]]);
-        let prime_length = u16::from_be_bytes([payload[4], payload[5]]);
+        let _generator_length = u16::from_be_bytes([payload[2], payload[3]]);
+        let _prime_length = u16::from_be_bytes([payload[4], payload[5]]);
 
         self.dh_other_public_key = Some(BigInt::from_bytes_be(
             Sign::Plus,
@@ -403,7 +400,7 @@ impl Security {
             self.dh_other_public_key
                 .as_ref()
                 .unwrap()
-                .modpow(&self.dh_private_key.as_ref().unwrap(), &prime),
+                .modpow(self.dh_private_key.as_ref().unwrap(), &prime),
         );
 
         // set the timestamp to the current time
@@ -521,7 +518,7 @@ impl Security {
         let mut bytes = bytes;
 
         // we dont want to encrypt acks (or any packet while the keys are not set)
-        if self.encryption_type.is_none() || self.master_secret.is_none() || bytes.len() == 0 {
+        if self.encryption_type.is_none() || self.master_secret.is_none() || bytes.is_empty() {
             return (bytes, vec![]);
         }
 
@@ -540,8 +537,6 @@ impl Security {
 
         let valid_signature = self.sign_packet(bytes.to_vec(), is_client);
 
-        println!("{:?}", valid_signature);
-
         (bytes, valid_signature)
     }
 
@@ -555,7 +550,7 @@ impl Security {
         let mut bytes = bytes;
 
         // we dont want to encrypt acks (or any packet while the keys are not set)
-        if self.encryption_type.is_none() || self.master_secret.is_none() || bytes.len() == 0 {
+        if self.encryption_type.is_none() || self.master_secret.is_none() || bytes.is_empty() {
             return Ok(bytes);
         }
 
@@ -626,10 +621,7 @@ impl Security {
 
                 mac.update(&bytes);
 
-                match mac.verify_slice(&signature[..]) {
-                    Ok(_) => true,
-                    Err(_) => false,
-                }
+                mac.verify_slice(&signature[..]).is_ok()
             }
         }
     }

@@ -34,8 +34,8 @@ impl ConnectionManager {
     fn start_recv_thread(&self) {
         let socket = self.socket.try_clone().unwrap();
 
-        let connection_queue = Arc::clone(&self.connection_queue);
-        let connections = Arc::clone(&self.connections);
+        let connection_queue = self.connection_queue.clone();
+        let connections = self.connections.clone();
 
         let encryption_enabled = self.encryption_enabled;
 
@@ -119,7 +119,7 @@ impl ConnectionManager {
                         Ok(_) => {
                             eprintln!("connection inserted into hashmap")
                         }
-                        Err(e) => {
+                        Err(_e) => {
                             eprintln!("Connection with same id already exists! The cookie echo was probably lost. We need to resend it. Letting the socket retransmission handle it");
                         }
                     }
@@ -132,34 +132,23 @@ impl ConnectionManager {
                 // This means that the packet can be handled by the connection with the same
                 // connection_id
                 let connections = connections.lock().unwrap();
-                let connection = connections.get(&packet.get_connection_id());
-                match connection {
-                    None => {
-                        eprintln!("We received data from a non existing connection. Ignoring");
-                        continue;
-                    }
-                    Some(connection) => {
-                        connection.lock().unwrap().receive_packet(packet, src);
-                    }
-                };
+
+                // If a connection with the received connection id is found, pass the received
+                // packet to the handler of that connection.
+                if let Some(connection) = connections.get(&packet.get_connection_id()) {
+                    connection.lock().unwrap().receive_packet(packet, src);
+                }
             }
         });
     }
 
     pub fn accept(&self) -> Arc<Mutex<Connection>> {
-        let connection_queue = Arc::clone(&self.connection_queue);
-
         loop {
-            match connection_queue.lock().unwrap().pop() {
-                Some(connection_id) => {
-                    let mut connections = self.connections.lock().unwrap();
-                    let connection = connections.get_mut(&connection_id).unwrap();
+            if let Some(connection_id) = self.connection_queue.lock().unwrap().pop() {
+                let mut connections = self.connections.lock().unwrap();
+                let connection = connections.get_mut(&connection_id).unwrap();
 
-                    let cloned_connection = Arc::clone(&connection);
-
-                    return cloned_connection;
-                }
-                None => {}
+                return connection.clone();
             }
         }
     }
@@ -186,7 +175,7 @@ impl ConnectionManager {
             connection.lock().unwrap().send_init();
         };
 
-        return Ok(connection.clone());
+        Ok(connection)
     }
 }
 
