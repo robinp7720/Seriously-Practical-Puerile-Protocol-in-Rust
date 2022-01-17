@@ -18,7 +18,7 @@ pub struct ConnectionCookie {
 impl ConnectionCookie {
     // creates a new cookie from the passed parameters and calculate the hmac
     pub fn new(source_addr: SocketAddr, connection_id: u32) -> Self {
-        let mut cookie = ConnectionCookie {
+        let cookie = ConnectionCookie {
             timestamp: SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap()
@@ -44,7 +44,7 @@ impl ConnectionCookie {
         let result = mac.finalize();
         let vec = result.into_bytes()[..].to_vec();
 
-        self.hmac = Some(vec.clone());
+        self.hmac = Some(vec);
 
         self
     }
@@ -115,10 +115,5 @@ impl ConnectionCookie {
                 .duration_since(UNIX_EPOCH)
                 .unwrap()
                 .as_millis()
-    }
-
-    // returns the size in bytes of the cookie including the hmac
-    pub fn get_size(&self) -> usize {
-        self.to_bytes(true).len()
     }
 }

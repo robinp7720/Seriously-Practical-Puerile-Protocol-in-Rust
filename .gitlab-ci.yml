@@ -9,6 +9,12 @@ fmt:
   script:
     - cargo fmt --check
 
+clippy:
+  image: rustdocker/rust:nightly
+  stage: format
+  script:
+    - cargo clippy --all -- -D warnings
+
 tests:
   image: rustdocker/rust:nightly
   stage: test

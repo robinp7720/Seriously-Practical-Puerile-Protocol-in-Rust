@@ -1,4 +1,3 @@
-use std::str::from_utf8;
 use std::thread;
 
 use spppsocketredo::SPPPSocket;
@@ -19,5 +18,5 @@ fn main() {
         }
     });
 
-    handle.join();
+    handle.join().expect("Failed to join server thread");
 }

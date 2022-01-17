@@ -15,7 +15,7 @@ fn echo_server_integration() {
         .spawn(client)
         .unwrap();
 
-    let server = thread::Builder::new()
+    let _server = thread::Builder::new()
         .name("Server".to_string())
         .spawn(server)
         .unwrap();

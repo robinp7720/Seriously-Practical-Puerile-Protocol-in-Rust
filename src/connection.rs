@@ -101,14 +101,12 @@ impl Connection {
     pub fn register_receive_channel(&mut self) -> Receiver<Vec<u8>> {
         let (send, receive_channel) = channel::<Vec<u8>>();
         self.receive_channel = Some(send);
-        return receive_channel;
+        receive_channel
     }
 
     pub fn is_client(&self) -> bool {
         self.is_client
     }
-
-    pub fn start_receive_thread(&self) {}
 
     pub fn verify_cookie(&self, cookie: &ConnectionCookie) -> bool {
         if cookie.source_addr != self.get_addr()
@@ -121,7 +119,7 @@ impl Connection {
         true
     }
 
-    pub fn receive_packet(&mut self, mut packet: Packet, src: SocketAddr) {
+    pub fn receive_packet(&mut self, packet: Packet, src: SocketAddr) {
         if *self.addr.read().unwrap() != src {
             eprintln!("Destination has changed source");
             let mut addr = self.addr.write().unwrap();
@@ -132,7 +130,7 @@ impl Connection {
         self.reliable_sender
             .update_local_arwnd(self.total_buffer_size());
 
-        let mut packet_expected = self.check_a_after_b(
+        let packet_expected = self.check_a_after_b(
             packet.get_sequence_number(),
             self.next_expected_sequence_number,
         );
@@ -255,7 +253,7 @@ impl Connection {
             }
         }
 
-        return seq_num_a >= seq_num_b;
+        seq_num_a >= seq_num_b
     }
 
     pub fn insert_packet_incoming_queue(&mut self, packet: Packet) {
@@ -313,7 +311,8 @@ impl Connection {
                 self.receive_channel
                     .as_ref()
                     .unwrap()
-                    .send(decrypted_payload);
+                    .send(decrypted_payload)
+                    .expect("Could not send incomming data to frontend");
             }
         }
 
@@ -372,8 +371,8 @@ impl Connection {
             } else {
                 let header = packet.encryption_header.as_ref().unwrap();
 
-                if header.supported_encryption_algorithms.len() == 0
-                    || header.supported_signature_algorithms.len() == 0
+                if header.supported_encryption_algorithms.is_empty()
+                    || header.supported_signature_algorithms.is_empty()
                 {
                     /* Go to CLOSED state */
                 } else {
@@ -403,7 +402,7 @@ impl Connection {
                 if is_client {
                     security.end_exchange_keys_client(packet.get_payload());
                 } else {
-                    let mut packet = security.exchange_keys_server(packet.get_payload());
+                    let packet = security.exchange_keys_server(packet.get_payload());
                     return vec![packet];
                 }
             }
@@ -497,8 +496,6 @@ impl Connection {
         // We wanted to close, and now the server does too
         if connection_state == ConnectionState::FinWait2 {
             self.set_connection_state(ConnectionState::TimeWait);
-
-            return;
         }
     }
 
@@ -555,7 +552,7 @@ impl Connection {
             // encrypt payload
             packet.set_payload(enc_payload);
 
-            if signature.len() > 0 {
+            if !signature.is_empty() {
                 packet.set_signature_header(SignatureHeader::new(signature));
             }
         }
@@ -756,10 +753,6 @@ impl Connection {
         self.channel_buffer = 0;
     }
 
-    pub fn get_in_flight(&self) -> u32 {
-        return self.reliable_sender.get_in_flight();
-    }
-
     pub fn can_send(&self) -> bool {
         self.reliable_sender.can_send()
     }
@@ -822,7 +815,7 @@ mod packet {
             ));
         }
 
-        for (i, cur) in con.incoming.lock().unwrap().iter().enumerate() {
+        for (i, _cur) in con.incoming.lock().unwrap().iter().enumerate() {
             assert_eq!(i as u8, rx.recv().unwrap()[0]);
         }
     }

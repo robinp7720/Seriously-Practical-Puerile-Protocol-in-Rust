@@ -1,5 +1,3 @@
-use std::io::Error;
-
 use crate::connection_security::{EncryptionType, SignatureType};
 
 #[derive(Debug)]
@@ -125,9 +123,9 @@ pub struct EncryptionHeader {
 
 impl EncryptionHeader {
     pub fn to_bytes(&self) -> Vec<u8> {
-        let mut out = vec![];
+        // Initialize byte sequence with next packet header
+        let mut out = vec![1];
 
-        out.push(1); // next header
         out.push(self.supported_encryption_algorithms.len() as u8);
         out.push(self.supported_signature_algorithms.len() as u8);
 
@@ -147,7 +145,7 @@ impl EncryptionHeader {
     }
     pub fn from_bytes(bytes: &[u8]) -> Self {
         let number_encryption = bytes[0];
-        let number_signature = bytes[1];
+        let _number_signature = bytes[1];
 
         let mut header = EncryptionHeader {
             supported_signature_algorithms: vec![],
@@ -190,9 +188,8 @@ pub struct SignatureHeader {
 
 impl SignatureHeader {
     pub fn to_bytes(&self) -> Vec<u8> {
-        let mut out = vec![];
-
-        out.push(2);
+        // Initialize byte sequence with next packet header
+        let mut out = vec![2];
         out.extend_from_slice(&(self.signature.len() as u16).to_be_bytes());
 
         out.extend_from_slice(&self.signature);
@@ -269,10 +266,9 @@ impl Packet {
     }
 
     pub fn get_signature(&self) -> Option<Vec<u8>> {
-        match &self.signature_header {
-            None => None,
-            Some(header) => Some(header.signature.to_vec()),
-        }
+        self.signature_header
+            .as_ref()
+            .map(|header| header.signature.to_vec())
     }
 
     pub fn set_sequence_number(&mut self, seq_num: u32) {
@@ -289,10 +285,6 @@ impl Packet {
 
     pub fn get_ack_number(&self) -> u32 {
         self.header.ack_number
-    }
-
-    pub fn set_encryption_header(&mut self, header: EncryptionHeader) {
-        self.encryption_header = Some(header);
     }
 
     pub fn set_signature_header(&mut self, header: SignatureHeader) {
@@ -385,10 +377,6 @@ impl Packet {
     pub fn is_sec(&self) -> bool {
         self.header.flags.sec
     }
-
-    pub fn set_sec(&mut self, sec: bool) {
-        self.header.flags.sec = sec;
-    }
 }
 
 #[cfg(test)]
@@ -404,8 +392,7 @@ mod packet {
     pub fn test_from_bytes() {
         let data: Vec<u8> = vec![
             0u8, 0u8, 0u8, 1u8, 0u8, 0u8, 0u8, 2u8, 0u8, 0u8, 0u8, 3u8, 0u8, 4u8, 0b10110110, 0u8,
-            'H' as u8, 'e' as u8, 'l' as u8, 'l' as u8, 'o' as u8, ' ' as u8, 'W' as u8, 'o' as u8,
-            'r' as u8, 'l' as u8, 'd' as u8, '!' as u8,
+            b'H', b'e', b'l', b'l', b'o', b' ', b'W', b'o', b'r', b'l', b'd', b'!',
         ];
 
         let packet = Packet::from_bytes(&data).unwrap();
@@ -428,7 +415,7 @@ mod packet {
 
     #[test]
     pub fn test_to_bytes() {
-        let mut packet = Packet::new(
+        let packet = Packet::new(
             PrimaryHeader {
                 connection_id: 1u32,
                 seq_number: 2u32,
@@ -454,8 +441,7 @@ mod packet {
             packet.to_bytes(),
             [
                 0u8, 0u8, 0u8, 1u8, 0u8, 0u8, 0u8, 2u8, 0u8, 0u8, 0u8, 3u8, 0u8, 4u8, 0b10110000,
-                0u8, 'H' as u8, 'e' as u8, 'l' as u8, 'l' as u8, 'o' as u8, ' ' as u8, 'W' as u8,
-                'o' as u8, 'r' as u8, 'l' as u8, 'd' as u8, '!' as u8
+                0u8, b'H', b'e', b'l', b'l', b'o', b' ', b'W', b'o', b'r', b'l', b'd', b'!'
             ]
         );
     }

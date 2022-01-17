@@ -6,7 +6,7 @@ extern crate lazy_static;
 
 use std::io::Error;
 use std::net::{ToSocketAddrs, UdpSocket};
-use std::sync::mpsc::{Receiver, TryRecvError};
+use std::sync::mpsc::Receiver;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
@@ -15,7 +15,7 @@ use connection::Connection;
 
 use crate::connection::ConnectionState;
 use crate::connection_manager::ConnectionManager;
-use crate::connection_security::{Security, SecurityState};
+use crate::connection_security::SecurityState;
 use crate::constants::MAX_PAYLOAD_SIZE;
 use crate::ConnectionState::CloseWait;
 
@@ -59,7 +59,7 @@ impl SPPPConnection {
     pub fn recv(&mut self) -> Result<Vec<u8>, Error> {
         self.read_all_into_buffer();
 
-        if self.receive_buffer.len() == 0 {
+        if self.receive_buffer.is_empty() {
             let data = self.receive_channel.recv().unwrap();
             let mut connection = self.connection.lock().unwrap();
             connection.reset_channel_buffer_size();
@@ -93,7 +93,7 @@ impl SPPPConnection {
     /// Returns True if data is in the receive buffer or false otherwise.
     pub fn can_recv(&mut self) -> bool {
         self.read_all_into_buffer();
-        self.receive_buffer.len() > 0
+        !self.receive_buffer.is_empty()
     }
 
     /// Private function call to wait while there are still unacknowledged packets.
