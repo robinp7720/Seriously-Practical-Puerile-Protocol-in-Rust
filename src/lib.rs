@@ -193,7 +193,7 @@ impl SPPPSocket {
         let connection = self.connection_manager.accept();
 
         let receive_channel: Receiver<Vec<u8>> =
-            { connection.lock().unwrap().register_receive_channel() };
+            { connection.lock().unwrap().get_receive_channel() };
 
         while connection.lock().unwrap().get_connection_state() != ConnectionState::Established {}
 
@@ -255,7 +255,7 @@ impl SPPPSocket {
         let connection = self.connection_manager.connect(addr)?;
 
         let receive_channel: Receiver<Vec<u8>> =
-            { connection.lock().unwrap().register_receive_channel() };
+            { connection.lock().unwrap().get_receive_channel() };
 
         eprintln!("Waiting for connection to be established");
         while connection.lock().unwrap().get_connection_state() != ConnectionState::Established {}

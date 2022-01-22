@@ -46,7 +46,8 @@ pub struct Connection {
     current_send_sequence_number: u32,
     next_expected_sequence_number: u32,
 
-    receive_channel: Option<Sender<Vec<u8>>>,
+    receive_channel: Sender<Vec<u8>>,
+    client_data_receiver: Option<Receiver<Vec<u8>>>,
 
     reliable_sender: ConnectionReliabilitySender,
 
@@ -72,6 +73,8 @@ impl Connection {
         let mut rng = rand::thread_rng();
         let addr_container = Arc::new(RwLock::new(addr));
 
+        let (receive_channel, client_data_receiver) = channel::<Vec<u8>>();
+
         Connection {
             reliable_sender: ConnectionReliabilitySender::new(
                 addr_container.clone(),
@@ -87,7 +90,8 @@ impl Connection {
             cookie: None,
             current_send_sequence_number: rng.gen(),
             next_expected_sequence_number,
-            receive_channel: None,
+            receive_channel,
+            client_data_receiver: Some(client_data_receiver),
 
             internal_buffer: 0,
             external_buffer: 0,
@@ -98,10 +102,8 @@ impl Connection {
         }
     }
 
-    pub fn register_receive_channel(&mut self) -> Receiver<Vec<u8>> {
-        let (send, receive_channel) = channel::<Vec<u8>>();
-        self.receive_channel = Some(send);
-        receive_channel
+    pub fn get_receive_channel(&mut self) -> Receiver<Vec<u8>> {
+        self.client_data_receiver.take().unwrap()
     }
 
     pub fn is_client(&self) -> bool {
@@ -309,8 +311,6 @@ impl Connection {
                 };
 
                 self.receive_channel
-                    .as_ref()
-                    .unwrap()
                     .send(decrypted_payload)
                     .expect("Could not send incomming data to frontend");
             }
@@ -804,7 +804,7 @@ mod packet {
         let addr = SocketAddr::new(IpAddr::from(Ipv4Addr::new(0, 0, 0, 0)), 1200);
         let mut con = Connection::new(addr, UdpSocket::bind(addr).unwrap(), 0, true, false, 0);
 
-        let rx = con.register_receive_channel();
+        let rx = con.get_receive_channel();
 
         for i in [0, 3, 2, 1, 6, 4, 5, 9, 8, 7] {
             con.insert_packet_incoming_queue(Packet::new(
