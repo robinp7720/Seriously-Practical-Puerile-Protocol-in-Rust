@@ -11,12 +11,13 @@ use std::thread::JoinHandle;
 use std::time::{Duration, SystemTime};
 
 use crate::connection::PacketRetransmit;
+use crate::connection_security::Security;
 
 use crate::constants::{
     CLOCK_GRANULARITY, CONNECTION_IDLE_TIME, INITIAL_RETRANSMISSION_TIMEOUT, MAX_PACKET_SIZE,
     MAX_PAYLOAD_SIZE, MAX_RETRANSMIT_COUNT, RECEIVE_WINDOW_SIZE,
 };
-use crate::packet::Packet;
+use crate::packet::{Packet, SignatureHeader};
 
 struct TimeoutPacket {
     send_time: SystemTime,
@@ -156,7 +157,11 @@ pub struct ConnectionReliabilitySender {
 }
 
 impl ConnectionReliabilitySender {
-    pub fn new(addr: Arc<RwLock<SocketAddr>>, socket: UdpSocket) -> Self {
+    pub fn new(
+        addr: Arc<RwLock<SocketAddr>>,
+        socket: UdpSocket,
+        security: Arc<RwLock<Security>>,
+    ) -> Self {
         let in_transit = Arc::new(Mutex::new(HashMap::new()));
 
         let (sending_queue_tx, sending_queue_rx) = channel::<PacketWithRetransmit>();
@@ -189,6 +194,7 @@ impl ConnectionReliabilitySender {
             curr_rto.clone(),
             local_arwnd.clone(),
             congestion_handler.clone(),
+            security,
         );
 
         Self::start_timeout_monitor_thread(
@@ -284,6 +290,7 @@ impl ConnectionReliabilitySender {
         curr_rto: Arc<AtomicU64>,
         arwnd: Arc<AtomicU16>,
         congestion_handler: Arc<CongestionHandler>,
+        security: Arc<RwLock<Security>>,
     ) {
         thread::spawn(move || {
             loop {
@@ -296,6 +303,19 @@ impl ConnectionReliabilitySender {
                 *congestion_handler.last_packet_send.lock().unwrap() = SystemTime::now();
 
                 let addr = *addr_container.read().unwrap();
+
+                if !packet.packet.is_sec() && security.read().unwrap().is_encrypted() {
+                    let signature = security
+                        .read()
+                        .unwrap()
+                        .sign_packet(packet.packet.get_padded_packet().to_bytes());
+
+                    if !signature.is_empty() {
+                        packet
+                            .packet
+                            .set_signature_header(SignatureHeader::new(signature));
+                    }
+                }
 
                 match socket.send_to(&*packet.packet.to_bytes(), addr) {
                     Ok(_) => {}
@@ -445,7 +465,7 @@ impl ConnectionReliabilitySender {
         }
 
         if packet.is_arwnd() {
-            packet_classification = PacketRetransmit::ArwndUpdate(packet.get_sequence_number());
+            packet_classification = PacketRetransmit::ArwndUpdate(packet.get_ack_number());
         }
 
         let (duplicate, send_time) = {

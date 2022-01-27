@@ -47,6 +47,7 @@ pub struct Security {
     lifetime: Duration,
     encrypt: bool, // stores if we want to encrypt a connection
     algorithms_not_finished: bool,
+    is_client: bool,
 }
 
 lazy_static! {
@@ -75,7 +76,7 @@ lazy_static! {
     };
 }
 impl Security {
-    pub fn new(encrypt: bool) -> Security {
+    pub fn new(encrypt: bool, is_client: bool) -> Security {
         Security {
             encryption_type: None,
             signature_type: None,
@@ -101,6 +102,7 @@ impl Security {
             lifetime: Duration::from_secs(60 * 1000), // Defaults to 1h
             encrypt,
             algorithms_not_finished: true,
+            is_client,
         }
     }
 
@@ -111,7 +113,6 @@ impl Security {
     }
 
     pub fn is_encrypted(&self) -> bool {
-        dbg!(self.encrypt);
         self.encrypt
     }
 
@@ -555,12 +556,12 @@ impl Security {
 
     // This function encrypts the provided payload and generates its signature
     // returns "(encrypted_payload, signature)"
-    pub fn encrypt_bytes(&mut self, bytes: Vec<u8>, is_client: bool) -> (Vec<u8>, Vec<u8>) {
+    pub fn encrypt_bytes(&mut self, bytes: Vec<u8>) -> Vec<u8> {
         let mut bytes = bytes;
 
         // we dont want to encrypt acks (or any packet while the keys are not set)
         if self.encryption_type.is_none() || self.master_secret.is_none() || bytes.is_empty() {
-            return (bytes, vec![]);
+            return bytes;
         }
 
         match self.encryption_type.unwrap() {
@@ -576,29 +577,16 @@ impl Security {
             }
         }
 
-        let valid_signature = self.sign_packet(bytes.to_vec(), is_client);
-
-        (bytes, valid_signature)
+        bytes
     }
 
     // This function decrypts the payload and checks if its signature is correct
-    pub fn decrypt_bytes(
-        &mut self,
-        bytes: Vec<u8>,
-        signature: Vec<u8>,
-        is_client: bool,
-    ) -> Result<Vec<u8>, &str> {
+    pub fn decrypt_bytes(&mut self, bytes: Vec<u8>) -> Vec<u8> {
         let mut bytes = bytes;
 
         // we dont want to encrypt acks (or any packet while the keys are not set)
         if self.encryption_type.is_none() || self.master_secret.is_none() || bytes.is_empty() {
-            return Ok(bytes);
-        }
-
-        if !self.verify_signature(bytes.to_vec(), signature, is_client) {
-            return Err(
-                "[ERROR] Signature of encrypted Packet did not match. Therefore it is possible that the message was altered!",
-            );
+            return bytes;
         }
 
         match self.encryption_type.unwrap() {
@@ -614,15 +602,19 @@ impl Security {
             }
         }
 
-        Ok(bytes)
+        bytes
     }
 
     // generate the signature of the unencrypted data
-    fn sign_packet(&self, bytes: Vec<u8>, is_client: bool) -> Vec<u8> {
+    pub fn sign_packet(&self, bytes: Vec<u8>) -> Vec<u8> {
+        if self.key_hmac_to_server.is_none() || self.key_hmac_to_client.is_none() {
+            return vec![];
+        }
+
         let server_key = self.key_hmac_to_server.as_ref().unwrap().to_bytes_be().1;
         let client_key = self.key_hmac_to_client.as_ref().unwrap().to_bytes_be().1;
 
-        let key = match is_client {
+        let key = match self.is_client {
             true => server_key,
             false => client_key,
         };
@@ -644,11 +636,11 @@ impl Security {
     }
 
     // checks the signature of data
-    fn verify_signature(&self, bytes: Vec<u8>, signature: Vec<u8>, is_client: bool) -> bool {
+    pub fn verify_signature(&self, bytes: Vec<u8>, signature: Vec<u8>) -> bool {
         let server_key = self.key_hmac_to_server.as_ref().unwrap().to_bytes_be().1;
         let client_key = self.key_hmac_to_client.as_ref().unwrap().to_bytes_be().1;
 
-        let key = match is_client {
+        let key = match self.is_client {
             true => client_key,
             false => server_key,
         };

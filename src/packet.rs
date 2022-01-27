@@ -1,6 +1,6 @@
 use crate::connection_security::{EncryptionType, SignatureType};
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct PrimaryHeader {
     connection_id: u32,
     seq_number: u32,
@@ -58,7 +58,7 @@ impl PrimaryHeader {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct PacketFlags {
     pub init: bool,
     pub cookie: bool,
@@ -115,7 +115,7 @@ impl PacketFlags {
         out
     }
 }
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct EncryptionHeader {
     pub supported_encryption_algorithms: Vec<EncryptionType>,
     pub supported_signature_algorithms: Vec<SignatureType>,
@@ -185,7 +185,7 @@ impl EncryptionHeader {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct SignatureHeader {
     pub signature: Vec<u8>,
 }
@@ -212,7 +212,7 @@ impl SignatureHeader {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Packet {
     header: PrimaryHeader,
     pub encryption_header: Option<EncryptionHeader>,
@@ -233,6 +233,13 @@ impl Packet {
             signature_header,
             payload,
         }
+    }
+
+    pub fn get_padded_packet(&self) -> Packet {
+        let mut packet = self.clone();
+        packet.set_signature_header(SignatureHeader::new(vec![0; 265]));
+
+        packet
     }
 
     pub fn to_bytes(&self) -> Vec<u8> {

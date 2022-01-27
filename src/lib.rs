@@ -193,15 +193,12 @@ impl SPPPSocket {
 
         while connection.lock().unwrap().get_connection_state() != ConnectionState::Established {}
 
+        let security = { connection.lock().unwrap().security.clone() };
+
         // wait till agree on algorithms is completed
         loop {
             {
-                if connection
-                    .lock()
-                    .unwrap()
-                    .security
-                    .algorithm_negotiation_finished()
-                {
+                if security.read().unwrap().algorithm_negotiation_finished() {
                     break;
                 }
             }
@@ -209,24 +206,19 @@ impl SPPPSocket {
             thread::sleep(Duration::from_millis(10));
         }
 
-        let is_encrypted = {
-            let connection = connection.lock().unwrap();
-            connection.security.is_encrypted()
-        };
+        let is_encrypted = security.read().unwrap().is_encrypted();
 
         if is_encrypted {
             eprintln!("Starting security");
 
             eprintln!("Start DH");
 
-            {
-                connection.lock().unwrap().security.state = SecurityState::ExchangeKeys;
-            }
+            security.write().unwrap().state = SecurityState::ExchangeKeys;
 
             // wait till master secret is set
             loop {
                 {
-                    if connection.lock().unwrap().security.master_secret_set() {
+                    if security.read().unwrap().master_secret_set() {
                         break;
                     }
                 }
@@ -234,7 +226,7 @@ impl SPPPSocket {
                 thread::sleep(Duration::from_millis(10));
             }
         } else {
-            connection.lock().unwrap().security.state = SecurityState::Secured;
+            security.write().unwrap().state = SecurityState::Secured;
             eprintln!("Encryption was disabled!");
         }
 
@@ -264,11 +256,14 @@ impl SPPPSocket {
         eprintln!("Waiting for connection to be established");
         while connection.lock().unwrap().get_connection_state() != ConnectionState::Established {}
 
+        let security = { connection.lock().unwrap().security.clone() };
+
         {
             // send packets for algorithm agreement and certificate exchange
 
+            let packets = security.read().unwrap().agree_on_algorithms_client();
+
             let mut connection = connection.lock().unwrap();
-            let packets = connection.security.agree_on_algorithms_client();
 
             for mut packet in packets {
                 packet.set_connection_id(connection.get_connection_id());
@@ -279,12 +274,7 @@ impl SPPPSocket {
         // wait till agree on algorithms is completed
         loop {
             {
-                if connection
-                    .lock()
-                    .unwrap()
-                    .security
-                    .algorithm_negotiation_finished()
-                {
+                if security.read().unwrap().algorithm_negotiation_finished() {
                     break;
                 }
             }
@@ -292,12 +282,7 @@ impl SPPPSocket {
             thread::sleep(Duration::from_millis(10));
         }
 
-        let is_encrypted = {
-            let connection = connection.lock().unwrap();
-            connection.security.is_encrypted()
-        };
-
-        if is_encrypted {
+        if security.read().unwrap().is_encrypted() {
             eprintln!("Starting security");
 
             eprintln!("Start DH");
@@ -305,7 +290,7 @@ impl SPPPSocket {
             // wait till master secret is set
             loop {
                 {
-                    if connection.lock().unwrap().security.master_secret_set() {
+                    if security.read().unwrap().master_secret_set() {
                         break;
                     }
                 }
@@ -313,7 +298,7 @@ impl SPPPSocket {
                 thread::sleep(Duration::from_millis(10));
             }
         } else {
-            connection.lock().unwrap().security.state = SecurityState::Secured;
+            security.write().unwrap().state = SecurityState::Secured;
             eprintln!("Encryption was disabled!");
         }
 

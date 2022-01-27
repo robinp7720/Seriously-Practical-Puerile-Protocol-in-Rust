@@ -9,7 +9,7 @@ use crate::connection_reliability_sender::ConnectionReliabilitySender;
 use crate::connection_security::Security;
 use crate::constants::{MAX_PAYLOAD_SIZE, RECEIVE_WINDOW_SIZE, TIME_WAIT_TIMEOUT};
 use crate::cookie::ConnectionCookie;
-use crate::packet::{Packet, PacketFlags, PrimaryHeader, SignatureHeader};
+use crate::packet::{Packet, PacketFlags, PrimaryHeader};
 use crate::SecurityState;
 
 #[derive(Eq, PartialEq, Copy, Clone, Debug)]
@@ -51,7 +51,7 @@ pub struct Connection {
 
     reliable_sender: ConnectionReliabilitySender,
 
-    pub security: Security,
+    pub security: Arc<RwLock<Security>>,
 
     internal_buffer: usize,
     external_buffer: usize,
@@ -75,12 +75,15 @@ impl Connection {
 
         let (receive_channel, client_data_receiver) = channel::<Vec<u8>>();
 
+        let security = Arc::new(RwLock::new(Security::new(is_encrypted, is_client)));
+
         Connection {
             reliable_sender: ConnectionReliabilitySender::new(
                 addr_container.clone(),
                 socket.try_clone().unwrap(),
+                security.clone(),
             ),
-            security: Security::new(is_encrypted),
+            security,
             addr: addr_container,
             connection_id,
             socket,
@@ -206,12 +209,22 @@ impl Connection {
         }
 
         if self.is_client()
-            && self.security.state == SecurityState::Secured
-            && self.security.key_expired()
+            && self.security.read().unwrap().state == SecurityState::Secured
+            && self.security.read().unwrap().key_expired()
         {
             eprintln!("[INFO] The key has expired. Exchanging a new one...");
-            self.security.state = SecurityState::ChangeKeys;
-            for mut packet in self.security.agree_on_algorithms_client() {
+
+            {
+                self.security.write().unwrap().state = SecurityState::ChangeKeys;
+            }
+
+            for mut packet in self
+                .security
+                .clone()
+                .read()
+                .unwrap()
+                .agree_on_algorithms_client()
+            {
                 packet.set_connection_id(self.get_connection_id());
                 self.send_packet(packet);
             }
@@ -284,7 +297,7 @@ impl Connection {
 
                 if next_packet.is_sec() {
                     packets_to_send.extend(Self::handle_sec_packet(
-                        &mut self.security,
+                        &mut *self.security.write().unwrap(),
                         &next_packet,
                         self.is_client,
                         &mut self.is_encrypted,
@@ -296,14 +309,21 @@ impl Connection {
                 self.channel_buffer += next_packet.payload_size();
 
                 let decrypted_payload = if self.is_encrypted {
-                    match self.security.decrypt_bytes(
-                        next_packet.get_payload(),
+                    let decrypted = self
+                        .security
+                        .write()
+                        .unwrap()
+                        .decrypt_bytes(next_packet.get_payload());
+
+                    match self.security.read().unwrap().verify_signature(
+                        next_packet.get_padded_packet().to_bytes(),
                         next_packet.get_signature().unwrap(),
-                        self.is_client(),
                     ) {
-                        Ok(payload) => payload,
-                        Err(e) => panic!("{}", e),
+                        true => {}
+                        false => panic!("Signature didn't match!"),
                     }
+
+                    decrypted
                 } else {
                     next_packet.get_payload()
                 };
@@ -461,8 +481,11 @@ impl Connection {
 
         // TODO: are there more things to clear?
         self.incoming.lock().unwrap().clear();
-        self.reliable_sender =
-            ConnectionReliabilitySender::new(self.addr.clone(), self.socket.try_clone().unwrap());
+        self.reliable_sender = ConnectionReliabilitySender::new(
+            self.addr.clone(),
+            self.socket.try_clone().unwrap(),
+            self.security.clone(),
+        );
 
         let mut flags = PacketFlags::new(0);
         flags.reset = true;
@@ -573,16 +596,14 @@ impl Connection {
         packet.set_sequence_number(self.current_send_sequence_number);
 
         if !packet.is_sec() {
-            let (enc_payload, signature) = self
+            let enc_payload = self
                 .security
-                .encrypt_bytes(packet.get_payload(), self.is_client());
+                .write()
+                .unwrap()
+                .encrypt_bytes(packet.get_payload());
 
             // encrypt payload
             packet.set_payload(enc_payload);
-
-            if !signature.is_empty() {
-                packet.set_signature_header(SignatureHeader::new(signature));
-            }
         }
 
         self.current_send_sequence_number = ((self.current_send_sequence_number as u64
@@ -593,12 +614,21 @@ impl Connection {
 
         // if the key expired we restart the security handshake
         if self.is_client()
-            && self.security.state == SecurityState::Secured
-            && self.security.key_expired()
+            && self.security.read().unwrap().state == SecurityState::Secured
+            && self.security.read().unwrap().key_expired()
         {
             eprintln!("[INFO] The key has expired. Exchanging a new one...");
-            self.security.state = SecurityState::ChangeKeys;
-            for mut packet in self.security.agree_on_algorithms_client() {
+            {
+                self.security.write().unwrap().state = SecurityState::ChangeKeys;
+            }
+
+            for mut packet in self
+                .security
+                .clone()
+                .read()
+                .unwrap()
+                .agree_on_algorithms_client()
+            {
                 packet.set_connection_id(self.get_connection_id());
                 self.send_packet(packet);
             }
