@@ -148,7 +148,6 @@ impl Drop for SPPPConnection {
 
 pub struct SPPPSocket {
     connection_manager: ConnectionManager,
-    enable_encryption: bool,
 }
 
 impl SPPPSocket {
@@ -174,10 +173,7 @@ impl SPPPSocket {
 
         connection_manager.start();
 
-        SPPPSocket {
-            connection_manager,
-            enable_encryption,
-        }
+        SPPPSocket { connection_manager }
     }
 
     /*pub fn listen(&self, queue_length: usize, whitelist: Option<Vec<IpAddr>>) -> Result<(), Error> {
@@ -197,24 +193,29 @@ impl SPPPSocket {
 
         while connection.lock().unwrap().get_connection_state() != ConnectionState::Established {}
 
-        if self.enable_encryption {
-            eprintln!("Starting security");
-
-            // wait till agree on algorithms is completed
-            loop {
+        // wait till agree on algorithms is completed
+        loop {
+            {
+                if connection
+                    .lock()
+                    .unwrap()
+                    .security
+                    .algorithm_negotiation_finished()
                 {
-                    if connection
-                        .lock()
-                        .unwrap()
-                        .security
-                        .algorithm_negotiation_finished()
-                    {
-                        break;
-                    }
+                    break;
                 }
-                // TODO update this to a channel
-                thread::sleep(Duration::from_millis(10));
             }
+            // TODO update this to a channel
+            thread::sleep(Duration::from_millis(10));
+        }
+
+        let is_encrypted = {
+            let connection = connection.lock().unwrap();
+            connection.security.is_encrypted()
+        };
+
+        if is_encrypted {
+            eprintln!("Starting security");
 
             eprintln!("Start DH");
 
@@ -232,6 +233,9 @@ impl SPPPSocket {
                 // TODO update this to a channel
                 thread::sleep(Duration::from_millis(10));
             }
+        } else {
+            connection.lock().unwrap().security.state = SecurityState::Secured;
+            eprintln!("Encryption was disabled!");
         }
 
         eprintln!("Connected");
@@ -260,36 +264,41 @@ impl SPPPSocket {
         eprintln!("Waiting for connection to be established");
         while connection.lock().unwrap().get_connection_state() != ConnectionState::Established {}
 
-        if self.enable_encryption {
-            eprintln!("Starting security");
+        {
+            // send packets for algorithm agreement and certificate exchange
 
+            let mut connection = connection.lock().unwrap();
+            let packets = connection.security.agree_on_algorithms_client();
+
+            for mut packet in packets {
+                packet.set_connection_id(connection.get_connection_id());
+                connection.send_packet(packet);
+            }
+        }
+
+        // wait till agree on algorithms is completed
+        loop {
             {
-                // send packets for algorithm agreement and certificate exchange
-
-                let mut connection = connection.lock().unwrap();
-                let packets = connection.security.agree_on_algorithms_client();
-
-                for mut packet in packets {
-                    packet.set_connection_id(connection.get_connection_id());
-                    connection.send_packet(packet);
-                }
-            }
-
-            // wait till agree on algorithms is completed
-            loop {
+                if connection
+                    .lock()
+                    .unwrap()
+                    .security
+                    .algorithm_negotiation_finished()
                 {
-                    if connection
-                        .lock()
-                        .unwrap()
-                        .security
-                        .algorithm_negotiation_finished()
-                    {
-                        break;
-                    }
+                    break;
                 }
-                // TODO update this to a channel
-                thread::sleep(Duration::from_millis(10));
             }
+            // TODO update this to a channel
+            thread::sleep(Duration::from_millis(10));
+        }
+
+        let is_encrypted = {
+            let connection = connection.lock().unwrap();
+            connection.security.is_encrypted()
+        };
+
+        if is_encrypted {
+            eprintln!("Starting security");
 
             eprintln!("Start DH");
 
@@ -303,6 +312,9 @@ impl SPPPSocket {
                 // TODO update this to a channel
                 thread::sleep(Duration::from_millis(10));
             }
+        } else {
+            connection.lock().unwrap().security.state = SecurityState::Secured;
+            eprintln!("Encryption was disabled!");
         }
 
         eprintln!("Connected");

@@ -80,7 +80,7 @@ impl Connection {
                 addr_container.clone(),
                 socket.try_clone().unwrap(),
             ),
-            security: Security::new(),
+            security: Security::new(is_encrypted),
             addr: addr_container,
             connection_id,
             socket,
@@ -192,8 +192,9 @@ impl Connection {
 
         // ignore packets when not in established phase
         if packet.payload_size() > 0
-            && connection_state != ConnectionState::CookieWait
-            && connection_state != ConnectionState::CookieEchoed
+            || packet.is_sec()
+                && connection_state != ConnectionState::CookieWait
+                && connection_state != ConnectionState::CookieEchoed
         {
             let seq_num = packet.get_sequence_number();
 
@@ -282,15 +283,12 @@ impl Connection {
                 self.internal_buffer -= next_packet.payload_size();
 
                 if next_packet.is_sec() {
-                    if self.is_encrypted {
-                        packets_to_send.extend(Self::handle_sec_packet(
-                            &mut self.security,
-                            &next_packet,
-                            self.is_client,
-                        ));
-                    } else {
-                        eprintln!("[WARNING] We got a packet with a sec flag. Since encryption was disabled by you, it will be ignored!");
-                    }
+                    packets_to_send.extend(Self::handle_sec_packet(
+                        &mut self.security,
+                        &next_packet,
+                        self.is_client,
+                        &mut self.is_encrypted,
+                    ));
 
                     continue;
                 }
@@ -344,9 +342,39 @@ impl Connection {
         *self.connection_state.lock().unwrap()
     }
 
-    fn handle_sec_packet(security: &mut Security, packet: &Packet, is_client: bool) -> Vec<Packet> {
+    fn handle_sec_packet(
+        security: &mut Security,
+        packet: &Packet,
+        is_client: bool,
+        encrypted: &mut bool,
+    ) -> Vec<Packet> {
         if packet.encryption_header.is_some() {
-            match security.check_certificate(packet.get_payload()) {
+            // check if other user wants to disable encryption
+            if packet.encryption_header.as_ref().unwrap().is_empty() {
+                eprintln!("disable encryption!");
+                security.set_encrypt(false);
+                *encrypted = false;
+
+                return if !is_client {
+                    vec![Security::get_empty_encryption_packet()]
+                } else {
+                    Vec::new()
+                };
+            }
+
+            if !security.got_entire_cert(packet.get_payload()) {
+                eprintln!("Waiting for rest of the certificate...");
+                return Vec::new();
+            }
+
+            if !(*encrypted) {
+                eprintln!("disable encryption!");
+                security.set_encrypt(false);
+                *encrypted = false;
+                return vec![Security::get_empty_encryption_packet()];
+            }
+
+            match security.check_certificate() {
                 Ok(_) => {}
                 Err(error) => {
                     eprintln!("{:?}", error); /* Go to CLOSED state */
