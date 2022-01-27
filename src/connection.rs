@@ -744,7 +744,9 @@ impl Connection {
         // If the total buffer size has changed by 5%,
         // we are supposed to send an arwnd update.
         // This is done to prevent a deadlock.
-        if (new_arwnd as f64 - old_arwnd as f64) / old_arwnd as f64 > 0.05 {
+        if (new_arwnd as f64 - old_arwnd as f64) / old_arwnd as f64 > 0.05
+            && self.get_connection_state() == ConnectionState::Established
+        {
             self.send_arwnd_update();
         }
     }
