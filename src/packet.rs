@@ -131,13 +131,13 @@ impl EncryptionHeader {
 
         for algo in &self.supported_encryption_algorithms {
             out.push(match algo {
-                EncryptionType::AES256counter => 1,
+                EncryptionType::AES256counter => 0,
             });
         }
 
         for algo in &self.supported_signature_algorithms {
             out.push(match algo {
-                SignatureType::SHA3_256 => 1,
+                SignatureType::SHA3_256 => 0,
             });
         }
 
@@ -157,7 +157,7 @@ impl EncryptionHeader {
         }
         for i in 2..number_encryption + 2 {
             match bytes[i as usize] {
-                1 => header
+                0 => header
                     .supported_encryption_algorithms
                     .push(EncryptionType::AES256counter),
                 x => {
@@ -168,7 +168,7 @@ impl EncryptionHeader {
 
         for i in number_encryption + 1..bytes.len() as u8 {
             match bytes[i as usize] {
-                1 => header
+                0 => header
                     .supported_signature_algorithms
                     .push(SignatureType::SHA3_256),
                 x => {
@@ -178,6 +178,10 @@ impl EncryptionHeader {
         }
 
         header
+    }
+    pub fn is_empty(&self) -> bool {
+        self.supported_signature_algorithms.is_empty()
+            && self.supported_encryption_algorithms.is_empty()
     }
 }
 

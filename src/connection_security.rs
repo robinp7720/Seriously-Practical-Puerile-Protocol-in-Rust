@@ -45,6 +45,8 @@ pub struct Security {
     aes_key_stream_decrypt: Option<Aes256Ctr>,
     timestamp: u128,
     lifetime: Duration,
+    encrypt: bool, // stores if we want to encrypt a connection
+    algorithms_not_finished: bool,
 }
 
 lazy_static! {
@@ -73,7 +75,7 @@ lazy_static! {
     };
 }
 impl Security {
-    pub fn new() -> Security {
+    pub fn new(encrypt: bool) -> Security {
         Security {
             encryption_type: None,
             signature_type: None,
@@ -97,7 +99,20 @@ impl Security {
                 .as_millis()
                 + 1_000_000_000, // this timestamp is in the future, so key_expired always returns false
             lifetime: Duration::from_secs(60 * 1000), // Defaults to 1h
+            encrypt,
+            algorithms_not_finished: true,
         }
+    }
+
+    pub fn set_encrypt(&mut self, state: bool) {
+        dbg!(state);
+        self.encrypt = state;
+        self.algorithms_not_finished = state;
+    }
+
+    pub fn is_encrypted(&self) -> bool {
+        dbg!(self.encrypt);
+        self.encrypt
     }
 
     // This function returns true if the key is to old
@@ -109,8 +124,8 @@ impl Security {
                 .as_millis()
     }
 
-    // This function trys to parse the payload into a certificate
-    pub fn check_certificate(&mut self, payload: Vec<u8>) -> Result<(), &'static str> {
+    // return true iff we got the entire certificate
+    pub fn got_entire_cert(&mut self, payload: Vec<u8>) -> bool {
         // extend the received certificate by the previous parts of it
         self.other_recieved_certificate_bytes
             .extend_from_slice(&payload);
@@ -119,12 +134,18 @@ impl Security {
         let payload = String::from_utf8(self.other_recieved_certificate_bytes.to_vec()).unwrap();
         let cert = match X509::from_pem(payload.as_bytes()) {
             Ok(cert) => cert,
-            Err(_) => return Err("[INFO] Waiting for the rest of the certificate..."),
+            Err(_) => return false,
         };
 
         self.other_recieved_certificate_bytes.clear();
 
         self.other_certificate = Some(cert);
+
+        true
+    }
+
+    // This function trys to parse the payload into a certificate
+    pub fn check_certificate(&mut self) -> Result<(), &'static str> {
         let cert = self.other_certificate.as_ref().unwrap();
 
         // check if one of the CA is issuing the received one
@@ -144,25 +165,31 @@ impl Security {
 
     // Initiate the exchange on client side
     pub fn agree_on_algorithms_client(&self) -> Vec<Packet> {
-        let payload = CETIFICATE.to_pem().unwrap();
-
-        // RSA certificates are quite big. Therefore we need to split the certificate into multiple packets
-        let chunks: Vec<&[u8]> = payload.chunks(MAX_PAYLOAD_SIZE).collect();
-
         let mut packets = Vec::new();
 
-        for chunk in chunks {
-            let mut flags = PacketFlags::new(0);
-            flags.sec = true;
+        if self.encrypt {
+            // send the certificates
 
-            let header = PrimaryHeader::new(0, 0, 0, 0, flags);
-            let encryption_header = EncryptionHeader {
-                supported_encryption_algorithms: vec![EncryptionType::AES256counter],
-                supported_signature_algorithms: vec![SignatureType::SHA3_256],
-            };
+            let payload = CETIFICATE.to_pem().unwrap();
 
-            let packet = Packet::new(header, Some(encryption_header), None, chunk.to_vec());
-            packets.push(packet);
+            // RSA certificates are quite big. Therefore we need to split the certificate into multiple packets
+            let chunks: Vec<&[u8]> = payload.chunks(MAX_PAYLOAD_SIZE).collect();
+
+            for chunk in chunks {
+                let mut flags = PacketFlags::new(0);
+                flags.sec = true;
+
+                let header = PrimaryHeader::new(0, 0, 0, 0, flags);
+                let encryption_header = EncryptionHeader {
+                    supported_encryption_algorithms: vec![EncryptionType::AES256counter],
+                    supported_signature_algorithms: vec![SignatureType::SHA3_256],
+                };
+
+                let packet = Packet::new(header, Some(encryption_header), None, chunk.to_vec());
+                packets.push(packet);
+            }
+        } else {
+            packets.push(Self::get_empty_encryption_packet());
         }
 
         packets
@@ -247,6 +274,19 @@ impl Security {
         Ok(packets)
     }
 
+    pub fn get_empty_encryption_packet() -> Packet {
+        let mut flags = PacketFlags::new(0);
+        flags.sec = true;
+
+        let header = PrimaryHeader::new(0, 0, 0, 0, flags);
+        let encryption_header = EncryptionHeader {
+            supported_encryption_algorithms: vec![],
+            supported_signature_algorithms: vec![],
+        };
+
+        Packet::new(header, Some(encryption_header), None, Vec::new())
+    }
+
     pub fn set_algorithms(&mut self, enc: EncryptionType, sig: SignatureType) {
         eprintln!(
             "[INFO] Agreed on algorithms. Encryption: {:?}, Signature: {:?}",
@@ -258,7 +298,8 @@ impl Security {
 
     // returns true if certificates and algorithms are exchanged
     pub fn algorithm_negotiation_finished(&self) -> bool {
-        self.encryption_type.is_some() && self.signature_type.is_some()
+        !self.algorithms_not_finished
+            || (self.encryption_type.is_some() && self.signature_type.is_some())
     }
 
     // sign a payload with your private RSA key
