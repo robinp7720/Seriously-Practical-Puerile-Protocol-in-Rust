@@ -89,6 +89,17 @@ impl CongestionHandler {
         *self.congestion_phase.lock().unwrap()
     }
 
+    pub fn update_cwnd_ack(&self) {
+        let congestion_phase = self.get_congestion_phase();
+        match congestion_phase {
+            CongestionPhase::FastProbing => self.increase_cwnd(MAX_PACKET_SIZE as u64),
+            CongestionPhase::CongestionAvoidance => {
+                let curr_cwnd = self.get_cwnd();
+                self.increase_cwnd(((MAX_PACKET_SIZE * MAX_PACKET_SIZE) as u64) / curr_cwnd);
+            }
+        }
+    }
+
     pub fn get_cwnd(&self) -> u64 {
         self.cwnd.load(Ordering::Relaxed)
     }
@@ -106,8 +117,9 @@ impl CongestionHandler {
     }
 
     pub fn append_to_window(&self, seq_num: u32) {
-        if !self.window.lock().unwrap().contains(&seq_num) {
-            self.window.lock().unwrap().push_back(seq_num);
+        let mut window_lock = self.window.lock().unwrap();
+        if !window_lock.contains(&seq_num) {
+            window_lock.push_back(seq_num);
         }
     }
 }
@@ -442,7 +454,7 @@ impl ConnectionReliabilitySender {
 
         if !duplicate {
             self.update_rtt(send_time);
-            self.update_cwnd_ack();
+            self.congestion_handler.update_cwnd_ack();
 
             if !packet.is_arwnd() {
                 self.in_flight.fetch_sub(1, Ordering::Relaxed);
@@ -499,18 +511,6 @@ impl ConnectionReliabilitySender {
     pub fn update_remote_arwnd(&mut self, arwnd: u16) {
         self.remote_arwnd.store(arwnd, Ordering::Relaxed);
         self.flow_thread_handle.thread().unpark();
-    }
-
-    pub fn update_cwnd_ack(&self) {
-        if self.congestion_handler.get_congestion_phase() == CongestionPhase::FastProbing {
-            self.congestion_handler
-                .increase_cwnd(MAX_PACKET_SIZE as u64);
-        }
-        if self.congestion_handler.get_congestion_phase() == CongestionPhase::CongestionAvoidance {
-            let curr_cwnd = self.congestion_handler.get_cwnd();
-            self.congestion_handler
-                .increase_cwnd(((MAX_PACKET_SIZE * MAX_PACKET_SIZE) as u64) / curr_cwnd);
-        }
     }
 
     pub fn can_send(&self) -> bool {
