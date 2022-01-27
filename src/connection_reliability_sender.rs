@@ -14,14 +14,19 @@ use crate::connection::PacketRetransmit;
 
 use crate::constants::{
     CLOCK_GRANULARITY, CONNECTION_IDLE_TIME, INITIAL_RETRANSMISSION_TIMEOUT, MAX_PACKET_SIZE,
-    MAX_PAYLOAD_SIZE, RECEIVE_WINDOW_SIZE,
+    MAX_PAYLOAD_SIZE, MAX_RETRANSMIT_COUNT, RECEIVE_WINDOW_SIZE,
 };
 use crate::packet::Packet;
 
 struct TimeoutPacket {
     send_time: SystemTime,
-    packet: Packet,
+    packet: PacketWithRetransmit,
     timeout: Duration,
+}
+
+struct PacketWithRetransmit {
+    packet: Packet,
+    retransmit: i8,
 }
 
 struct TransitStatus {
@@ -127,7 +132,7 @@ impl CongestionHandler {
 pub struct ConnectionReliabilitySender {
     in_transit: Arc<Mutex<HashMap<PacketRetransmit, TransitStatus>>>,
 
-    sending_queue_tx: Sender<Packet>,
+    sending_queue_tx: Sender<PacketWithRetransmit>,
 
     // Smoothed Round Trip Time in milliseconds
     srtt: u128,
@@ -143,7 +148,7 @@ pub struct ConnectionReliabilitySender {
     local_arwnd: Arc<AtomicU16>,
     remote_arwnd: Arc<AtomicU16>,
     flow_thread_handle: JoinHandle<u8>,
-    flow_sender_tx: Sender<Packet>,
+    flow_sender_tx: Sender<PacketWithRetransmit>,
     queued_for_flight: Arc<AtomicU16>,
 
     // track congestion control
@@ -154,9 +159,9 @@ impl ConnectionReliabilitySender {
     pub fn new(addr: Arc<RwLock<SocketAddr>>, socket: UdpSocket) -> Self {
         let in_transit = Arc::new(Mutex::new(HashMap::new()));
 
-        let (sending_queue_tx, sending_queue_rx) = channel::<Packet>();
+        let (sending_queue_tx, sending_queue_rx) = channel::<PacketWithRetransmit>();
         let (in_transit_queue_tx, in_transit_queue_rx) = channel::<TimeoutPacket>();
-        let (flow_sender_tx, flow_sender_rx) = channel::<Packet>();
+        let (flow_sender_tx, flow_sender_rx) = channel::<PacketWithRetransmit>();
 
         let curr_rto = Arc::new(AtomicU64::new(
             INITIAL_RETRANSMISSION_TIMEOUT.as_millis() as u64
@@ -225,8 +230,8 @@ impl ConnectionReliabilitySender {
     }
 
     fn start_flow_thread(
-        flow_send_rx: Receiver<Packet>,
-        sending_queue_tx: Sender<Packet>,
+        flow_send_rx: Receiver<PacketWithRetransmit>,
+        sending_queue_tx: Sender<PacketWithRetransmit>,
         in_flight: Arc<AtomicU16>,
         remote_arwnd: Arc<AtomicU16>,
         queued_for_flight: Arc<AtomicU16>,
@@ -271,7 +276,7 @@ impl ConnectionReliabilitySender {
 
     #[allow(clippy::too_many_arguments)]
     fn start_send_thread(
-        sending_queue_rx: Receiver<Packet>,
+        sending_queue_rx: Receiver<PacketWithRetransmit>,
         in_transit: Arc<Mutex<HashMap<PacketRetransmit, TransitStatus>>>,
         in_transit_queue: Sender<TimeoutPacket>,
         addr_container: Arc<RwLock<SocketAddr>>,
@@ -286,13 +291,13 @@ impl ConnectionReliabilitySender {
 
                 let arwnd = arwnd.load(Ordering::Relaxed);
 
-                packet.set_arwnd(arwnd);
+                packet.packet.set_arwnd(arwnd);
 
                 *congestion_handler.last_packet_send.lock().unwrap() = SystemTime::now();
 
                 let addr = *addr_container.read().unwrap();
 
-                match socket.send_to(&*packet.to_bytes(), addr) {
+                match socket.send_to(&*packet.packet.to_bytes(), addr) {
                     Ok(_) => {}
                     Err(_) => {
                         // Maybe it would be good if we handled packet failure differently if it
@@ -306,27 +311,27 @@ impl ConnectionReliabilitySender {
                 // Don't bother checking if an ACK packet is still in transit
                 // This should handle cookie ACKs as well since they dont have a payload and have
                 // the ack flag set.
-                if packet.is_ack() {
+                if packet.packet.is_ack() {
                     continue;
                 }
 
                 // We need to keep track of which packets are currently in transit
                 // so we can accept acknowledgements for them later
                 let mut packet_classification =
-                    PacketRetransmit::Data(packet.get_sequence_number());
+                    PacketRetransmit::Data(packet.packet.get_sequence_number());
 
-                if packet.is_init() {
+                if packet.packet.is_init() {
                     packet_classification = PacketRetransmit::Init;
-                } else if packet.is_cookie() {
+                } else if packet.packet.is_cookie() {
                     packet_classification = PacketRetransmit::CookieEcho;
-                } else if packet.is_arwnd() {
+                } else if packet.packet.is_arwnd() {
                     packet_classification =
-                        PacketRetransmit::ArwndUpdate(packet.get_sequence_number());
+                        PacketRetransmit::ArwndUpdate(packet.packet.get_sequence_number());
                 }
 
                 let send_time = SystemTime::now();
 
-                congestion_handler.append_to_window(packet.get_sequence_number());
+                congestion_handler.append_to_window(packet.packet.get_sequence_number());
 
                 in_transit.lock().unwrap().insert(
                     packet_classification,
@@ -349,7 +354,7 @@ impl ConnectionReliabilitySender {
 
     fn start_timeout_monitor_thread(
         transit_queue_rx: Receiver<TimeoutPacket>,
-        sending_queue_tx: Sender<Packet>,
+        sending_queue_tx: Sender<PacketWithRetransmit>,
         in_transit: Arc<Mutex<HashMap<PacketRetransmit, TransitStatus>>>,
         congestion_handler: Arc<CongestionHandler>,
     ) {
@@ -365,19 +370,19 @@ impl ConnectionReliabilitySender {
             thread::sleep(time_to_wait);
 
             let mut packet_classification =
-                PacketRetransmit::Data(current_timeout_packet.packet.get_sequence_number());
+                PacketRetransmit::Data(current_timeout_packet.packet.packet.get_sequence_number());
 
-            if current_timeout_packet.packet.is_init() {
+            if current_timeout_packet.packet.packet.is_init() {
                 packet_classification = PacketRetransmit::Init;
             }
 
-            if current_timeout_packet.packet.is_cookie() {
+            if current_timeout_packet.packet.packet.is_cookie() {
                 packet_classification = PacketRetransmit::CookieEcho;
             }
 
-            if current_timeout_packet.packet.is_arwnd() {
+            if current_timeout_packet.packet.packet.is_arwnd() {
                 packet_classification = PacketRetransmit::ArwndUpdate(
-                    current_timeout_packet.packet.get_sequence_number(),
+                    current_timeout_packet.packet.packet.get_sequence_number(),
                 );
             }
 
@@ -386,11 +391,19 @@ impl ConnectionReliabilitySender {
                 Some(status) => status,
             };
 
+            if current_timeout_packet.packet.retransmit >= MAX_RETRANSMIT_COUNT {
+                panic!("A packet exceeded the max retransmit count.");
+                // !TODO: Implement a function to close the connection
+            }
+
             if !transit_status.arrived {
                 congestion_handler
-                    .cwnd_packet_loss(current_timeout_packet.packet.get_sequence_number());
+                    .cwnd_packet_loss(current_timeout_packet.packet.packet.get_sequence_number());
                 sending_queue_tx
-                    .send(current_timeout_packet.packet)
+                    .send(PacketWithRetransmit {
+                        packet: current_timeout_packet.packet.packet,
+                        retransmit: current_timeout_packet.packet.retransmit + 1,
+                    })
                     .expect("Could not send packet to sending queue for retransmit");
             }
         });
@@ -400,7 +413,10 @@ impl ConnectionReliabilitySender {
         if packet.is_ack() || packet.is_arwnd() {
             // Don't bother with flow control for ACKs
             self.sending_queue_tx
-                .send(packet)
+                .send(PacketWithRetransmit {
+                    packet,
+                    retransmit: 0,
+                })
                 .expect("Could not send packet to sending queue");
             return;
         }
@@ -408,7 +424,10 @@ impl ConnectionReliabilitySender {
         self.queued_for_flight.fetch_add(1, Ordering::Relaxed);
 
         self.flow_sender_tx
-            .send(packet)
+            .send(PacketWithRetransmit {
+                packet,
+                retransmit: 0,
+            })
             .expect("Could not push packet to flow sender queue");
     }
 
