@@ -16,7 +16,11 @@ fn main() {
                 File::open("/home/robin/Free.Guy.2021.1080p.HDRip.X264-EVO.mkv").unwrap();
             loop {
                 let mut chunk = vec![0; chunk_size];
-                let _amt = file.read_exact(&mut chunk).unwrap();
+
+                match file.read_exact(&mut chunk) {
+                    Ok(_) => {}
+                    Err(_) => return,
+                };
 
                 connection.send(chunk);
 
@@ -24,8 +28,6 @@ fn main() {
                     eprintln!("Client has closed the connection");
                     return;
                 }
-
-                //thread::sleep(Duration::from_millis(20));
             }
         });
     }

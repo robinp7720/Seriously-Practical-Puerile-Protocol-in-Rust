@@ -28,6 +28,11 @@ fn main() {
         }
 
         if let Ok(line) = receiver.try_recv() {
+            eprintln!("{:?}", line.as_bytes());
+            if line == "\n" {
+                return;
+            }
+
             con.send(line.as_bytes().to_vec());
         }
     }
