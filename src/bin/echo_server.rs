@@ -9,9 +9,16 @@ fn main() {
         let mut connection = socket.accept().unwrap();
 
         thread::spawn(move || loop {
-            let data = connection.recv().unwrap();
-            println!("{}", std::str::from_utf8(&*data).unwrap());
-            connection.send(data);
+            if connection.can_recv() {
+                let data = connection.recv().unwrap();
+                println!("{}", std::str::from_utf8(&*data).unwrap());
+                connection.send(data);
+            }
+
+            if connection.client_closed() {
+                eprintln!("Client has closed the connection");
+                return;
+            }
         });
     }
 }
