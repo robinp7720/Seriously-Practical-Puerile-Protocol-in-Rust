@@ -1,6 +1,7 @@
 use std::cmp::{max, min};
 use std::collections::HashMap;
 
+//use cipher::generic_array::typenum::Or;
 use std::collections::VecDeque;
 use std::net::{SocketAddr, UdpSocket};
 use std::sync::atomic::{AtomicU16, AtomicU32, AtomicU64, Ordering};
@@ -66,7 +67,18 @@ impl CongestionHandler {
         };
 
         // ignore packet when paket is already part of a loss window
-        if seq_num < self.loss_til.load(Ordering::Relaxed) {
+        let loss_til = self.loss_til.load(Ordering::Relaxed);
+        eprintln!("Packet loss, Losswindow til: {}", loss_til);
+        if loss_til > ((RECEIVE_WINDOW_SIZE as usize * 10) * MAX_PAYLOAD_SIZE) as u32 {
+            let threshold =
+                loss_til as usize - ((RECEIVE_WINDOW_SIZE as usize * 10) * MAX_PAYLOAD_SIZE);
+            if seq_num > threshold as u32 && seq_num < loss_til {
+                return;
+            }
+        } else if seq_num < loss_til
+            || seq_num as u64
+                > 2_u64.pow(32) - ((RECEIVE_WINDOW_SIZE as usize * 10) * MAX_PAYLOAD_SIZE) as u64
+        {
             return;
         }
 
@@ -74,12 +86,13 @@ impl CongestionHandler {
         self.loss_til.store(x, Ordering::Relaxed);
 
         // halve cwnd
-        self.cwnd
+        let cwnd = self
+            .cwnd
             .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |x| {
                 Some(self.halve_to_min(x))
             })
             .expect("Could not halve cwnd");
-
+        eprintln!("New CWND: {}", cwnd);
         *self.congestion_phase.lock().unwrap() = CongestionPhase::CongestionAvoidance;
     }
 
