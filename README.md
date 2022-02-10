@@ -1,6 +1,7 @@
 # Seriously Practical Puerile Protocol (SPPP)
 
-
+This is an implementation of a protocol designed during a university module.
+In it's current state, it's capable of transmiting and receiving bitwise perfect streams over lossy communication channels. We measured a peak data rate of 12MB/s.
 
 ## Running example applications
 
